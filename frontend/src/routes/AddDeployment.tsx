@@ -28,8 +28,14 @@ export default function AddDeployment() {
     e.preventDefault();
     const url = githubUrl.trim();
     if (!url) return;
+    // Auto-fill name from repo if user pasted a URL with a repo name
+    let name: string | undefined = undefined;
+    try {
+      const match = url.match(/\/([^\/]+?)(?:\.git)?\/?$/);
+      if (match) name = match[1];
+    } catch {}
     deploy.mutate(
-      { body: { github_url: url } },
+      { body: name ? { github_url: url, name } : { github_url: url } },
       {
         onSuccess: (created) => navigate(`/deployment/${created.id}`),
         onError: () => toast.error("Failed to start deployment"),

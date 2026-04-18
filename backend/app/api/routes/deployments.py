@@ -18,9 +18,32 @@ async def create_deployment(
     session: SessionDep,
     current_user: CurrentUser,
 ) -> Deployment:
+    # Determine default name if not provided
+    name = payload.name
+    if not name:
+        if payload.github_url:
+            # Extract repo name from URL
+            import re
+            match = re.search(r"/([^/]+?)(?:\.git)?/?$", payload.github_url)
+            if match:
+                name = match.group(1)
+        elif payload.upload_id:
+            # Try to get filename from upload (if available)
+            upload = await session.execute(
+                f"SELECT filename FROM uploads WHERE upload_id = :upload_id",
+                {"upload_id": payload.upload_id},
+            )
+            row = upload.first()
+            if row and row[0]:
+                # Use folder name (strip .tar.gz/.zip if present)
+                import os
+                base = os.path.basename(row[0])
+                name = re.sub(r"\.(tar\.gz|zip)$", "", base)
+            else:
+                name = payload.upload_id[-6:]  # fallback
     deployment = Deployment(
         user_id=current_user.id,
-        name=payload.name,
+        name=name,
         github_url=payload.github_url,
         upload_id=payload.upload_id,
     )

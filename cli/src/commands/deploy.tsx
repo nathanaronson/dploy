@@ -82,9 +82,15 @@ export function Deploy({ target, envInline, envFile, name, follow }: Props) {
         setEnv(loadedEnv);
 
         let source: CreateDeploymentBody["source"];
+        let autoName: string | undefined = name;
 
         if (isGithub) {
           source = { type: "github", url: sourceTarget! };
+          if (!autoName) {
+            // Try to extract repo name
+            const match = sourceTarget!.match(/\/([^\/]+?)(?:\.git)?\/?$/);
+            if (match) autoName = match[1];
+          }
         } else {
           setPhase("bundling");
           const bundled = await bundleDir(cwd);
@@ -97,12 +103,19 @@ export function Deploy({ target, envInline, envFile, name, follow }: Props) {
           if (cancelled) return;
           setUpload(uploaded);
           source = { type: "upload", id: uploaded.uploadId };
+          if (!autoName) {
+            // Use folder name
+            const pathParts = resolvedPath.split(/[\\/]/);
+            autoName = pathParts[pathParts.length - 1] || undefined;
+          }
         }
 
         setPhase("creating");
+        const body: any = { source, env: loadedEnv };
+        if (autoName) body.name = autoName;
         const created = await api<CreateDeploymentResponse>("/api/deployments", {
           method: "POST",
-          body: { source, env: loadedEnv, name },
+          body,
         });
         if (cancelled) return;
         setDeploymentId(created.deploymentId);
@@ -122,7 +135,7 @@ export function Deploy({ target, envInline, envFile, name, follow }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [envFile, envInline, exit, isAuthed, isGithub, name, resolvedPath, sourceTarget]);
+  }, [envFile, envInline, exit, isAuthed, name, isGithub, resolvedPath, sourceTarget]);
 
   useEffect(() => {
     if (!deployment) return;
