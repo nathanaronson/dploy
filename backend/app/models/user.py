@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import BigInteger, String, Text
+from sqlalchemy import BigInteger, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,6 +21,14 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
-    # The GitHub user-access token. Used so we can clone private repos on the
-    # user's behalf during deployment.
+    # GitHub App user-to-server access token. Used to act on the user's behalf
+    # (e.g. clone private repos during deployment). Default lifetime is 8h
+    # unless the App opted out of expiration.
     github_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    github_access_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    github_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    github_refresh_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

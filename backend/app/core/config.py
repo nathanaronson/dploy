@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     session_ttl_hours: int = 24 * 7
 
+    # Used to HMAC-sign short-lived values like the OAuth `state` param. Set
+    # this to a long random string in production.
+    session_secret: str = "dev-only-change-me"
+
 
 @lru_cache
 def get_settings() -> Settings:

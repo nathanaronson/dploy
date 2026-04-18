@@ -1,21 +1,17 @@
-import secrets
-
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import CurrentUser, SessionDep
 from app.core.config import get_settings
 from app.schemas.user import UserRead
-from app.services import github_oauth
+from app.services import github_oauth, oauth_state
 from app.services.auth import create_session, delete_session, upsert_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_OAUTH_STATE_COOKIE = "dploy_oauth_state"
-
 
 @router.get("/github/login")
-async def github_login(request: Request) -> RedirectResponse:
+async def github_login() -> RedirectResponse:
     """Kick off the GitHub OAuth flow."""
     settings = get_settings()
     if not settings.github_client_id:
@@ -24,25 +20,14 @@ async def github_login(request: Request) -> RedirectResponse:
             detail="GitHub OAuth is not configured",
         )
 
-    state = secrets.token_urlsafe(16)
-    redirect = RedirectResponse(
-        url=github_oauth.build_authorize_url(state),
+    return RedirectResponse(
+        url=github_oauth.build_authorize_url(oauth_state.issue_state()),
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
-    redirect.set_cookie(
-        _OAUTH_STATE_COOKIE,
-        state,
-        max_age=600,
-        httponly=True,
-        secure=settings.session_cookie_secure,
-        samesite="lax",
-    )
-    return redirect
 
 
 @router.get("/github/callback")
 async def github_callback(
-    request: Request,
     db: SessionDep,
     code: str | None = None,
     state: str | None = None,
@@ -53,15 +38,13 @@ async def github_callback(
         raise HTTPException(status_code=400, detail=f"GitHub error: {error}")
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
-
-    expected_state = request.cookies.get(_OAUTH_STATE_COOKIE)
-    if not expected_state or not secrets.compare_digest(expected_state, state):
+    if not oauth_state.verify_state(state):
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    access_token = await github_oauth.exchange_code_for_token(code)
-    gh_user = await github_oauth.fetch_user(access_token)
+    token = await github_oauth.exchange_code_for_token(code)
+    gh_user = await github_oauth.fetch_user(token.access_token)
 
-    user = await upsert_user(db, gh_user, access_token)
+    user = await upsert_user(db, gh_user, token)
     session = await create_session(db, user)
     await db.commit()
 
@@ -69,7 +52,6 @@ async def github_callback(
         url=settings.frontend_url,
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    redirect.delete_cookie(_OAUTH_STATE_COOKIE)
     redirect.set_cookie(
         settings.session_cookie_name,
         session.token,

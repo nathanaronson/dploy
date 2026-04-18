@@ -8,7 +8,7 @@ def test_login_redirects_to_github(client: TestClient) -> None:
     response = client.get("/api/v1/auth/github/login", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"].startswith(github_oauth.GITHUB_AUTHORIZE_URL)
-    assert "dploy_oauth_state" in response.cookies
+    assert "state=" in response.headers["location"]
 
 
 def test_me_unauthenticated(client: TestClient) -> None:
@@ -37,9 +37,15 @@ def test_github_callback_full_flow(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_exchange(code: str) -> str:
+    async def fake_exchange(code: str) -> github_oauth.GitHubToken:
         assert code == "abc123"
-        return "ghu_fake_token"
+        return github_oauth.GitHubToken(
+            access_token="ghu_fake_token",
+            token_type="bearer",
+            access_token_expires_at=None,
+            refresh_token="ghr_fake_refresh",
+            refresh_token_expires_at=None,
+        )
 
     async def fake_fetch(token: str) -> github_oauth.GitHubUser:
         assert token == "ghu_fake_token"
@@ -60,11 +66,13 @@ def test_github_callback_full_flow(
         fake_fetch,
     )
 
-    # Pretend the user already started the OAuth dance and has a state cookie.
-    client.cookies.set("dploy_oauth_state", "state-xyz")
+    # The state is HMAC-signed; we mint a real one the same way the login route does.
+    from app.services import oauth_state
+
+    state = oauth_state.issue_state()
     response = client.get(
         "/api/v1/auth/github/callback",
-        params={"code": "abc123", "state": "state-xyz"},
+        params={"code": "abc123", "state": state},
         follow_redirects=False,
     )
     assert response.status_code == 303
