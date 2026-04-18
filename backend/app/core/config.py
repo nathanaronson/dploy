@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # this to a long random string in production.
     session_secret: str = "dev-only-change-me"
 
+    dedalus_api_key: str = ""
+    anthropic_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
