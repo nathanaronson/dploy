@@ -1,38 +1,23 @@
-import { useEffect, useState } from "react";
 import { useParams, Navigate, Link } from "react-router";
 import { useAuth } from "../lib/AuthContext";
-import { getProjectStatus, type Project } from "../lib/api";
+import { useProject } from "../lib/api";
+import type { DeployStatus } from "../lib/api";
 import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
-import LogsViewer from "../components/LogsViewer";
+
+const statusMessages: Record<string, string> = {
+  pending: "Queued for analysis...",
+  analyzing: "Analyzing your repo...",
+  building: "Installing dependencies & building...",
+  running: "Your app is live!",
+  failed: "Deployment failed",
+  stopped: "Deployment stopped",
+};
 
 export default function ProjectStatus() {
   const { id } = useParams();
   const { user, loading: authLoading } = useAuth();
-  const [project, setProject] = useState<Project | null>(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!id || !user) return;
-
-    // Initial fetch
-    getProjectStatus(id)
-      .then(setProject)
-      .catch((e) => setError(e instanceof Error ? e.message : "Unknown error"));
-
-    // Poll every 3s while not terminal
-    const interval = setInterval(async () => {
-      try {
-        const p = await getProjectStatus(id);
-        setProject(p);
-        if (p.status === "running" || p.status === "failed") {
-          clearInterval(interval);
-        }
-      } catch {}
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [id, user]);
+  const { data: project, error, isLoading } = useProject(id, { poll: true });
 
   if (authLoading) return null;
   if (!user) return <Navigate to="/login" />;
@@ -41,7 +26,9 @@ export default function ProjectStatus() {
     return (
       <Layout>
         <div className="text-center py-16">
-          <p className="text-red-400 mb-4">{error}</p>
+          <p className="text-red-400 mb-4">
+            {error instanceof Error ? error.message : "Unknown error"}
+          </p>
           <Link to="/" className="text-orange-400 hover:text-orange-300 text-sm">
             Back to dashboard
           </Link>
@@ -50,7 +37,7 @@ export default function ProjectStatus() {
     );
   }
 
-  if (!project) {
+  if (isLoading || !project) {
     return (
       <Layout>
         <div className="text-center py-16 text-gray-500">Loading...</div>
@@ -58,57 +45,56 @@ export default function ProjectStatus() {
     );
   }
 
-  const statusMessages: Record<string, string> = {
-    pending: "Analyzing your repo...",
-    building: "Installing dependencies & building...",
-    running: "Your app is live!",
-    failed: "Deployment failed",
-  };
+  const repoLabel = project.github_url ?? `upload:${project.upload_id ?? "?"}`;
 
   return (
     <Layout>
-      <Link to="/" className="text-sm text-gray-500 hover:text-gray-300 transition mb-6 inline-block">
+      <Link
+        to="/"
+        className="text-sm text-gray-500 hover:text-gray-300 transition mb-6 inline-block"
+      >
         ← Back to dashboard
       </Link>
 
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white">{project.name}</h1>
-          <p className="text-sm text-gray-500 font-mono mt-1">{project.repo_url}</p>
+          <h1 className="text-2xl font-bold text-white">{project.name ?? project.id}</h1>
+          <p className="text-sm text-gray-500 font-mono mt-1">{repoLabel}</p>
         </div>
-        <StatusBadge status={project.status} />
+        <StatusBadge status={project.status as DeployStatus} />
       </div>
 
-      {/* Status message */}
       <div className="mb-6 p-4 rounded-xl border border-gray-800 bg-gray-900/50">
         <p className="text-sm text-gray-300">
-          {project.status === "building" && (
+          {(project.status === "building" || project.status === "analyzing") && (
             <span className="inline-block w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
           )}
-          {statusMessages[project.status]}
+          {statusMessages[project.status] ?? project.status}
         </p>
       </div>
 
-      {/* Live URL + Port */}
-      {project.status === "running" && project.url && (
+      {project.status === "running" && project.public_url && (
         <div className="mb-6 p-4 rounded-xl border border-green-500/20 bg-green-500/5">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-green-400">Live URL</p>
               <a
-                href={project.url}
+                href={project.public_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-white font-mono text-sm hover:text-green-300 transition"
               >
-                {project.url}
+                {project.public_url}
               </a>
-              {project.port && (
-                <p className="text-xs text-gray-500 mt-1">Port: {project.port}</p>
+              {project.exposed_ports && project.exposed_ports.length > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Port{project.exposed_ports.length > 1 ? "s" : ""}:{" "}
+                  {project.exposed_ports.join(", ")}
+                </p>
               )}
             </div>
             <button
-              onClick={() => navigator.clipboard.writeText(project.url!)}
+              onClick={() => navigator.clipboard.writeText(project.public_url!)}
               className="px-3 py-1.5 rounded-lg border border-gray-700 text-xs text-gray-400 hover:text-white hover:border-gray-600 transition"
             >
               Copy URL
@@ -117,13 +103,13 @@ export default function ProjectStatus() {
         </div>
       )}
 
-      {/* Logs */}
-      <div>
-        <h2 className="text-sm font-medium text-gray-400 mb-3">Build logs</h2>
-        <LogsViewer logs={project.logs} />
-      </div>
+      {project.error && (
+        <div className="mb-6 p-4 rounded-xl border border-red-500/20 bg-red-500/5">
+          <p className="text-sm font-medium text-red-400 mb-1">Error</p>
+          <pre className="text-xs text-red-300 whitespace-pre-wrap font-mono">{project.error}</pre>
+        </div>
+      )}
 
-      {/* Timestamps */}
       <p className="text-xs text-gray-600 mt-4">
         Created: {new Date(project.created_at).toLocaleString()}
       </p>

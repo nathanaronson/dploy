@@ -32,6 +32,10 @@ dist-ssr/
 *.local
 .pnpm-store/
 
+# Generated API client (regenerate with `pnpm gen:api`)
+frontend/src/client/
+frontend/openapi.json
+
 # Rust / cli
 target/
 **/*.rs.bk

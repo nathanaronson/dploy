@@ -27,7 +27,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               >
                 + Deploy
               </Link>
-              <div className="text-sm text-gray-400">{user.email}</div>
+              <div className="text-sm text-gray-400">{user.login}</div>
               <button
                 onClick={() => { logout(); navigate("/login"); }}
                 className="text-sm text-gray-500 hover:text-gray-300 transition"
