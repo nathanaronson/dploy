@@ -8,92 +8,128 @@ const _API_BASE = "http://localhost:8000"; // ← Ryan/Sam: update this
 
 // ---------- Types ----------
 
-export type DeployStatus = "pending" | "building" | "running" | "failed";
+export type DeployStatus = "Running" | "Building" | "Failed";
 
-export interface Project {
+export interface LogEntry {
+  time: string;
+  message: string;
+}
+
+export interface Deployment {
   id: string;
   name: string;
-  repo_url: string;
+  source: string;
   status: DeployStatus;
-  port: number | null;
   url: string | null;
-  logs: string;
-  created_at: string;
+  port: number | null;
+  type: "github" | "local";
+  createdAt: string;
+  logs: LogEntry[];
 }
 
 export interface User {
   id: string;
-  email: string;
   name: string;
+  avatar: string;
   github_connected: boolean;
   api_key: string;
 }
 
-// ---------- Dummy state (in-memory) ----------
+// ---------- Dummy state ----------
 
 let currentUser: User | null = null;
 
-const DUMMY_PROJECTS: Project[] = [
+const API_KEY = "erk_demo_key_a1b2c3d4e5f6g7h8i9j0";
+
+const DUMMY_DEPLOYMENTS: Deployment[] = [
   {
     id: "proj_001",
     name: "my-express-api",
-    repo_url: "https://github.com/demo/my-express-api",
-    status: "running",
-    port: 3000,
+    source: "https://github.com/demo/my-express-api",
+    status: "Running",
     url: "https://dploy.dev/proj_001",
-    logs: "[12:00:01] Cloning repo...\n[12:00:03] Detected: Node.js (package.json)\n[12:00:04] Running npm install...\n[12:00:12] Running npm start...\n[12:00:14] ✓ Server listening on port 3000\n[12:00:14] ✓ Deployed successfully",
-    created_at: "2026-04-18T10:00:00Z",
+    port: 3000,
+    type: "github",
+    createdAt: "2026-04-15 12:00:14",
+    logs: [
+      { time: "12:00:01", message: "Cloning repo..." },
+      { time: "12:00:03", message: "Detected: Node.js (package.json)" },
+      { time: "12:00:04", message: "Running npm install..." },
+      { time: "12:00:12", message: "Running npm start..." },
+      { time: "12:00:14", message: "\u2713 Server listening on port 3000" },
+      { time: "12:00:14", message: "\u2713 Deployed successfully" },
+    ],
   },
   {
     id: "proj_002",
-    name: "flask-ml-app",
-    repo_url: "https://github.com/demo/flask-ml-app",
-    status: "building",
-    port: null,
+    name: "react-dashboard",
+    source: "Local project",
+    status: "Building",
     url: null,
-    logs: "[12:05:01] Cloning repo...\n[12:05:03] Detected: Python (requirements.txt)\n[12:05:04] Running pip install -r requirements.txt...\n[12:05:20] Installing dependencies...",
-    created_at: "2026-04-18T12:05:00Z",
+    port: 5173,
+    type: "local",
+    createdAt: "2026-04-18 09:30:22",
+    logs: [
+      { time: "09:30:22", message: "Uploading local files..." },
+      { time: "09:30:25", message: "Detected: React + Vite (vite.config.ts)" },
+      { time: "09:30:26", message: "Running pnpm install..." },
+      { time: "09:30:38", message: "Running pnpm dev..." },
+    ],
   },
   {
     id: "proj_003",
-    name: "broken-app",
-    repo_url: "https://github.com/demo/broken-app",
-    status: "failed",
-    port: null,
+    name: "nextjs-blog",
+    source: "https://github.com/demo/nextjs-blog",
+    status: "Failed",
     url: null,
-    logs: "[11:30:01] Cloning repo...\n[11:30:03] Detected: Node.js (package.json)\n[11:30:04] Running npm install...\n[11:30:10] ✗ Error: Missing dependency 'pg'\n[11:30:10] ✗ Build failed",
-    created_at: "2026-04-18T09:30:00Z",
+    port: null,
+    type: "github",
+    createdAt: "2026-04-17 16:45:08",
+    logs: [
+      { time: "16:45:08", message: "Cloning repo..." },
+      { time: "16:45:11", message: "Detected: Next.js (next.config.js)" },
+      { time: "16:45:12", message: "Running npm install..." },
+      { time: "16:45:28", message: "Running npm run build..." },
+      { time: "16:45:42", message: "\u2717 Build failed: Module not found" },
+      { time: "16:45:42", message: "\u2717 Deployment failed" },
+    ],
+  },
+  {
+    id: "proj_004",
+    name: "python-flask-app",
+    source: "Local project",
+    status: "Running",
+    url: "https://dploy.dev/proj_004",
+    port: 5000,
+    type: "local",
+    createdAt: "2026-04-16 14:20:55",
+    logs: [
+      { time: "14:20:55", message: "Uploading local files..." },
+      { time: "14:20:58", message: "Detected: Python (requirements.txt)" },
+      { time: "14:20:59", message: "Creating virtual environment..." },
+      { time: "14:21:02", message: "Installing dependencies..." },
+      { time: "14:21:15", message: "Running python app.py..." },
+      { time: "14:21:17", message: "\u2713 Server listening on port 5000" },
+      { time: "14:21:17", message: "\u2713 Deployed successfully" },
+    ],
   },
 ];
 
 // ---------- Auth ----------
 
-/** SWAP: POST /api/auth/signup */
-export async function signup(email: string, _password: string, name: string): Promise<User> {
-  await fake_delay(600);
-  currentUser = {
-    id: "user_" + Math.random().toString(36).slice(2, 8),
-    email,
-    name,
-    github_connected: false,
-    api_key: "erk_" + Math.random().toString(36).slice(2, 18),
-  };
-  localStorage.setItem("dploy_user", JSON.stringify(currentUser));
-  return currentUser;
-}
-
-/** SWAP: POST /api/auth/login */
-export async function login(email: string, _password: string): Promise<User> {
-  await fake_delay(600);
+/** SWAP: GET /api/auth/github — redirect to GitHub OAuth */
+export async function signInWithGithub(): Promise<User> {
+  await fakeDelay(800);
   currentUser = {
     id: "user_abc123",
-    email,
-    name: email.split("@")[0],
+    name: "demo-user",
+    avatar: "https://github.com/github.png",
     github_connected: true,
-    api_key: "erk_demo_key_123456",
+    api_key: API_KEY,
   };
   localStorage.setItem("dploy_user", JSON.stringify(currentUser));
   return currentUser;
+  // REAL: window.location.href = `${_API_BASE}/api/auth/github`
 }
 
 export function logout() {
@@ -111,80 +147,66 @@ export function getStoredUser(): User | null {
   return null;
 }
 
-/** SWAP: POST /api/auth/github — redirect to GitHub OAuth */
-export async function connectGithub(): Promise<User> {
-  await fake_delay(1000);
-  if (!currentUser) throw new Error("Not logged in");
-  currentUser = { ...currentUser, github_connected: true };
-  localStorage.setItem("dploy_user", JSON.stringify(currentUser));
-  return currentUser;
-  // REAL: window.location.href = `${API_BASE}/api/auth/github`
+export function getApiKey(): string {
+  return currentUser?.api_key ?? API_KEY;
 }
 
-// ---------- Projects / Deploy ----------
+// ---------- Deployments ----------
 
 /** SWAP: GET /api/projects */
-export async function getProjects(): Promise<Project[]> {
-  await fake_delay(400);
-  return [...DUMMY_PROJECTS];
+export async function getDeployments(): Promise<Deployment[]> {
+  await fakeDelay(300);
+  return [...DUMMY_DEPLOYMENTS];
 }
 
 /** SWAP: GET /api/status?id=xxx */
-export async function getProjectStatus(id: string): Promise<Project> {
-  await fake_delay(300);
-  const project = DUMMY_PROJECTS.find((p) => p.id === id);
-  if (!project) throw new Error("Project not found");
-
-  // Simulate building → running transition
-  if (project.status === "building") {
-    const elapsed = Date.now() - new Date(project.created_at).getTime();
-    if (elapsed > 30000) {
-      project.status = "running";
-      project.port = 5000;
-      project.url = `https://dploy.dev/${project.id}`;
-      project.logs += "\n[12:05:45] ✓ Server listening on port 5000\n[12:05:45] ✓ Deployed successfully";
-    }
-  }
-
-  return { ...project };
+export async function getDeployment(id: string): Promise<Deployment | null> {
+  await fakeDelay(200);
+  return DUMMY_DEPLOYMENTS.find((d) => d.id === id) ?? null;
 }
 
 /** SWAP: POST /api/push */
-export async function deployProject(repo_url: string): Promise<Project> {
-  await fake_delay(800);
-  const name = repo_url.split("/").pop() || "unnamed-project";
-  const newProject: Project = {
+export async function deployFromGithub(repoUrl: string): Promise<Deployment> {
+  await fakeDelay(800);
+  const name = repoUrl.split("/").pop() || "unnamed-project";
+  const newDeployment: Deployment = {
     id: "proj_" + Math.random().toString(36).slice(2, 8),
     name,
-    repo_url,
-    status: "pending",
-    port: null,
+    source: repoUrl,
+    status: "Building",
     url: null,
-    logs: `[${new Date().toLocaleTimeString()}] Cloning repo...\n`,
-    created_at: new Date().toISOString(),
+    port: null,
+    type: "github",
+    createdAt: new Date().toISOString().replace("T", " ").slice(0, 19),
+    logs: [
+      { time: new Date().toLocaleTimeString([], { hour12: false }), message: "Cloning repo..." },
+    ],
   };
-  DUMMY_PROJECTS.unshift(newProject);
+  DUMMY_DEPLOYMENTS.unshift(newDeployment);
 
-  // Simulate status progression
+  // Simulate progression
   setTimeout(() => {
-    newProject.status = "building";
-    newProject.logs += `[${new Date().toLocaleTimeString()}] Detected: Node.js (package.json)\n`;
-    newProject.logs += `[${new Date().toLocaleTimeString()}] Running npm install...\n`;
+    newDeployment.logs.push(
+      { time: new Date().toLocaleTimeString([], { hour12: false }), message: "Detected: Node.js (package.json)" },
+      { time: new Date().toLocaleTimeString([], { hour12: false }), message: "Running npm install..." },
+    );
   }, 2000);
 
   setTimeout(() => {
-    newProject.status = "running";
-    newProject.port = 3000 + Math.floor(Math.random() * 5000);
-    newProject.url = `https://dploy.dev/${newProject.id}`;
-    newProject.logs += `[${new Date().toLocaleTimeString()}] ✓ Server listening on port ${newProject.port}\n`;
-    newProject.logs += `[${new Date().toLocaleTimeString()}] ✓ Deployed successfully\n`;
-  }, 8000);
+    newDeployment.status = "Running";
+    newDeployment.port = 3000 + Math.floor(Math.random() * 5000);
+    newDeployment.url = `https://dploy.dev/${newDeployment.id}`;
+    newDeployment.logs.push(
+      { time: new Date().toLocaleTimeString([], { hour12: false }), message: `\u2713 Server listening on port ${newDeployment.port}` },
+      { time: new Date().toLocaleTimeString([], { hour12: false }), message: "\u2713 Deployed successfully" },
+    );
+  }, 6000);
 
-  return newProject;
+  return newDeployment;
 }
 
 // ---------- Helpers ----------
 
-function fake_delay(ms: number) {
+function fakeDelay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
