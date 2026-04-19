@@ -11,6 +11,12 @@ import { useAuth } from "../hooks/useAuth.js";
 import { errorMessage } from "../lib/errors.js";
 import { formatRelativeTime } from "../lib/time.js";
 
+const TERMINAL_STATUSES = new Set<Deployment["status"]>([
+  "running",
+  "failed",
+  "stopped",
+]);
+
 export function List() {
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
@@ -54,6 +60,48 @@ export function List() {
       cancelled = true;
     };
   }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isRawModeSupported) return;
+    if (!isAuthed) return;
+    if (loading) return;
+
+    const hasInFlight = deployments.some(
+      (deployment) => !TERMINAL_STATUSES.has(deployment.status),
+    );
+    if (!hasInFlight) return;
+
+    let cancelled = false;
+
+    const refresh = async (): Promise<void> => {
+      try {
+        const latest = await api<Deployment[]>("/api/deployments");
+        if (cancelled) return;
+
+        const selectedId = deployments[selectedIndex]?.id;
+        setDeployments(latest);
+        setSelectedIndex((current) => {
+          if (latest.length === 0) return 0;
+          if (selectedId) {
+            const nextIndex = latest.findIndex((deployment) => deployment.id === selectedId);
+            if (nextIndex >= 0) return nextIndex;
+          }
+          return Math.min(current, latest.length - 1);
+        });
+      } catch {
+        // Polling failures are transient (network hiccups / backend restart).
+      }
+    };
+
+    const interval = setInterval(() => {
+      void refresh();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [deployments, isAuthed, isRawModeSupported, loading, selectedIndex]);
 
   useEffect(() => {
     if (isRawModeSupported) return;
