@@ -22,7 +22,25 @@ Deployment usually requires someone to inspect the repo, pick a runtime, identif
 | Auth | GitHub OAuth |
 | CLI | TypeScript, Ink |
 
-## Getting Started
+## Install the CLI
+
+The fastest way to get `dploy` on your machine:
+
+```bash
+npm install -g @ryantanen/dploy
+```
+
+…or, without npm, fetch the prebuilt bundle from GitHub Releases:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nathanaronson/hp-sp-26/main/install.sh | bash
+```
+
+Both install the same self-contained Node bundle (built by CI from
+[`cli/`](cli)). Requires Node ≥ 20. Point at a backend with
+`export DPLOY_API_URL=https://your-backend`.
+
+## Getting Started (development)
 
 ### Prerequisites
 
