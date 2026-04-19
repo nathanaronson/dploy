@@ -100,12 +100,13 @@ this shape to the same path and reply with `{FAILURE_SENTINEL}`:
 
 _ANALYZE_SCHEMA = """\
 {
+  "kind":             "web | cli",           // see classification rules below
   "runtime":          "node | python | go | rust | ruby | java | static | docker | unknown",
   "package_manager":  "npm | pnpm | yarn | bun | pip | uv | poetry | go | cargo | bundler | maven | none",
   "install_commands": ["array", "of", "shell strings to run from the project root"],
   "build_commands":   ["optional, runs after install, before start"],
-  "start_command":    "single shell string that launches the long-running server",
-  "port_hint":        3000,                  // integer, or null if unknown
+  "start_command":    "single shell string that launches the app (server OR cli binary)",
+  "port_hint":        3000,                  // integer, or null (always null for kind=cli)
   "env_required":     ["NAMES_ONLY", "no values"],
   "notes":            "1-2 sentences explaining the choice",
   "confidence":       "high | medium | low"
@@ -127,6 +128,30 @@ Your job is to look at the project at {REPO_DIR} and decide:
 
 You DO NOT run the install or start commands. You only read files. Agent #2
 will execute your plan.
+
+# Classifying kind: "web" vs "cli"
+
+Most repos are web apps — set `kind="web"`. A few are CLIs or batch tools;
+set `kind="cli"` when:
+
+  * The project has no HTTP server, no port binding, no framework like
+    FastAPI/Flask/Express/Next/etc.
+  * It's a command-line tool, REPL, TUI, or one-shot script that reads
+    stdin / args and writes stdout.
+  * Clues: `[project.scripts]` in pyproject.toml with no web framework in
+    deps; `package.json` with a top-level `bin` field and no `start`/`dev`
+    script; a `main.go` that doesn't call `http.ListenAndServe`; a repo
+    whose README talks about `./mytool --help` instead of a URL.
+
+For kind="cli":
+  * `start_command` is the command that *launches the CLI once* — e.g.
+    `python3 -u -i` for a REPL, `./mytool --serve` for a long-running CLI,
+    `uv run mytool` for a uv-packaged entrypoint.
+  * `port_hint` MUST be null.
+  * The start_command does NOT need to bind to 0.0.0.0; port rules below
+    don't apply.
+  * Agent #2 will be skipped — the orchestrator runs install/build itself
+    and then attaches the browser terminal to the binary on demand.
 
 # Tool discipline
 

@@ -32,6 +32,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
+from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.deployment import (
     AGENT_KIND_ANALYZE,
@@ -57,8 +58,10 @@ from app.services.agents import (
     render_expose_user,
 )
 from app.services.agents.heuristics import try_synthesize_plan
-from app.services.sandbox import Sandbox, SandboxError
+from app.services.sandbox import REPO_DIR, Sandbox, SandboxError
 from app.services import sandbox_pool
+
+import shlex
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +107,12 @@ def _short(value: Any, limit: int = 200) -> str:
     if len(s) > limit:
         return s[:limit] + f"...({len(s) - limit} more)"
     return s
+
+
+def _cli_terminal_url(deployment_id: str) -> str:
+    """Frontend route that hosts the browser terminal for CLI deployments."""
+    base = get_settings().frontend_url.rstrip("/")
+    return f"{base}/deployment/{deployment_id}/terminal"
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +209,21 @@ def _clone_into_sync(sb: Sandbox, github_url: str) -> None:
     except Exception:
         sb.terminate()
         raise
+
+
+def _run_install_sync(sb: Sandbox, plan: dict[str, Any]) -> None:
+    """Execute install + build commands directly in the sandbox.
+
+    Used for `kind=cli` deployments where we skip Agent #2 entirely.
+    Raises `SandboxError` (via `check_exec`) on the first non-zero exit so
+    the caller can surface a structured failure.
+    """
+    for cmd in plan.get("install_commands") or []:
+        sb.check_exec(cmd, cwd=REPO_DIR, timeout_s=600,
+                      stdout_limit=200_000, stderr_limit=200_000)
+    for cmd in plan.get("build_commands") or []:
+        sb.check_exec(cmd, cwd=REPO_DIR, timeout_s=900,
+                      stdout_limit=200_000, stderr_limit=200_000)
 
 
 def _run_agent_sync(
@@ -427,8 +451,10 @@ async def run_deployment(deployment_id: str) -> None:
 
         install_cmds = plan.get("install_commands") or []
         build_cmds = plan.get("build_commands") or []
+        kind = plan.get("kind") or "web"
         dlog.info(
-            "plan summary: runtime=%s pm=%s install=%d cmds build=%d cmds start=%r port_hint=%s confidence=%s",
+            "plan summary: kind=%s runtime=%s pm=%s install=%d cmds build=%d cmds start=%r port_hint=%s confidence=%s",
+            kind,
             plan.get("runtime"),
             plan.get("package_manager"),
             len(install_cmds),
@@ -439,7 +465,8 @@ async def run_deployment(deployment_id: str) -> None:
         )
         await _append_log(
             deployment_id,
-            f"Plan: runtime={plan.get('runtime')} pm={plan.get('package_manager')} "
+            f"Plan: kind={kind} runtime={plan.get('runtime')} "
+            f"pm={plan.get('package_manager')} "
             f"port_hint={plan.get('port_hint')} confidence={plan.get('confidence')}",
         )
         for cmd in install_cmds:
@@ -447,19 +474,76 @@ async def run_deployment(deployment_id: str) -> None:
         for cmd in build_cmds:
             await _append_log(deployment_id, f"  build:   {cmd}")
         await _append_log(deployment_id, f"  start:   {plan.get('start_command')}")
+
+        start_cmd = plan.get("start_command") or ""
+        entrypoint = shlex.split(start_cmd) if start_cmd else None
+
         await _update_deployment(
             deployment_id,
+            kind=kind,
+            entrypoint=entrypoint,
             runtime=plan.get("runtime"),
             package_manager=plan.get("package_manager"),
             install_commands=install_cmds,
             build_commands=build_cmds,
-            start_command=plan.get("start_command"),
+            start_command=start_cmd or None,
             run_commands=install_cmds + build_cmds,
             env_required=plan.get("env_required") or [],
         )
 
         # ------------------------------------------------------------------
-        # 3. Agent #2 — expose
+        # 3a. CLI kind — skip Agent #2, just run install/build, mark running.
+        # The browser terminal spawns the binary on demand.
+        # ------------------------------------------------------------------
+        if kind == "cli":
+            terminal_url = _cli_terminal_url(deployment_id)
+            await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
+            await _append_log(
+                deployment_id,
+                "CLI deployment: running install/build commands directly "
+                "(no server to expose)...",
+            )
+            try:
+                with _step(dlog, "cli install+build"):
+                    await asyncio.to_thread(_run_install_sync, sb, plan)
+            except SandboxError as e:
+                err = f"install/build failed: {_short(e, 300)}"
+                await _update_deployment(
+                    deployment_id,
+                    status=DEPLOYMENT_STATUS_FAILED,
+                    error=err,
+                )
+                await _append_log(deployment_id, f"ERROR: {err}")
+                dlog.warning("cli install/build failed: %s", _short(e, 300))
+                return
+
+            await _update_deployment(
+                deployment_id,
+                status=DEPLOYMENT_STATUS_RUNNING,
+                port=None,
+                bound_address=None,
+                health_path=None,
+                http_status=None,
+                exposed_ports=[],
+                public_url=terminal_url,
+            )
+            elapsed = int((time.perf_counter() - overall_t0) * 1000)
+            dlog.info(
+                "CLI DEPLOYMENT READY in %dms: entrypoint=%s terminal_url=%s",
+                elapsed, entrypoint, terminal_url,
+            )
+            await _append_log(
+                deployment_id,
+                f"CLI READY ({elapsed/1000:.1f}s total) — terminal URL: {terminal_url}",
+            )
+            await _append_log(
+                deployment_id,
+                f"  entrypoint: {shlex.join(entrypoint) if entrypoint else '(no entrypoint)'}",
+            )
+            return
+
+        # ------------------------------------------------------------------
+        # 3. Agent #2 — expose  (web kind only)
         # ------------------------------------------------------------------
         await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
         await _append_log(

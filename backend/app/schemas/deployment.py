@@ -64,6 +64,8 @@ class DeploymentRead(BaseModel):
     status: str
     sandbox_id: str | None
     model: str | None
+    kind: str
+    entrypoint: list[str] | None
     runtime: str | None
     package_manager: str | None
     install_commands: list[str] | None

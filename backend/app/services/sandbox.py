@@ -101,7 +101,7 @@ def _build_image() -> modal.Image:
         )
 
     env_inline = (
-        "PATH=/root/.npm-global/bin:$PATH HOME=/root "
+        "PATH=/root/.cargo/bin:/root/.npm-global/bin:$PATH HOME=/root "
         "OPENCLAW_STATE_DIR=/root/.openclaw "
         "NODE_COMPILE_CACHE=/root/.compile-cache OPENCLAW_NO_RESPAWN=1"
     )
@@ -124,8 +124,10 @@ def _build_image() -> modal.Image:
         .run_commands("curl -fsSL https://deb.nodesource.com/setup_22.x | bash -")
         .apt_install("nodejs")
         .run_commands(
-            "mkdir -p /root/.npm-global /root/.npm-cache /root/.openclaw "
+            "mkdir -p /root/.cargo /root/.npm-global /root/.npm-cache /root/.openclaw "
             "/root/.openclaw/workspace /root/.compile-cache",
+            "curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable",
+            f"{env_inline} cargo --version >/dev/null",
             "NPM_CONFIG_PREFIX=/root/.npm-global NPM_CONFIG_CACHE=/root/.npm-cache "
             "npm install -g openclaw@latest pnpm yarn bun",
             # Bake openclaw config (cached layer).
@@ -147,7 +149,7 @@ def _build_image() -> modal.Image:
             "true'",
         )
         .env({
-            "PATH": "/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:"
+            "PATH": "/root/.cargo/bin:/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:"
                     "/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME": "/root",
             "OPENCLAW_STATE_DIR": "/root/.openclaw",
@@ -455,6 +457,54 @@ class Sandbox:
             _short(text[-200:] if text else "(empty)", 200),
         )
         return parsed
+
+    # ------------------------------------------------------------------
+    # Interactive PTY exec (for web terminal)
+    # ------------------------------------------------------------------
+
+    def exec_pty(
+        self,
+        argv: list[str],
+        *,
+        cols: int = 80,
+        rows: int = 24,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_s: int | None = None,
+    ) -> Any:
+        """Spawn `argv` under a PTY inside the sandbox. Returns the raw
+        `modal.container_process.ContainerProcess`.
+
+        No shell is involved — `argv` is passed straight to `execve`, so
+        shell metacharacters in arguments are literal. The caller is
+        responsible for reading `proc.stdout` and writing `proc.stdin`.
+
+        `text=False` so the streams carry bytes (what xterm.js speaks).
+        """
+        from modal_proto import api_pb2
+
+        if not argv:
+            raise ValueError("argv must not be empty")
+
+        pty_info = api_pb2.PTYInfo(
+            enabled=True,
+            winsz_rows=rows,
+            winsz_cols=cols,
+            env_term="xterm-256color",
+            no_terminate_on_idle_stdin=True,
+        )
+        log.info(
+            "exec_pty: argv=%s cwd=%s cols=%d rows=%d",
+            argv, cwd, cols, rows,
+        )
+        return self._sb.exec(
+            *argv,
+            pty_info=pty_info,
+            workdir=cwd,
+            env=env,
+            text=False,
+            timeout=timeout_s,
+        )
 
     # ------------------------------------------------------------------
     # Public ingress
