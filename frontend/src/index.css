@@ -207,6 +207,21 @@ input { font-family: inherit; }
   color: var(--ink-muted);
 }
 
+.logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: color 0.15s;
+}
+.logout-btn:hover { color: var(--ink); }
+
 .icon-btn {
   width: 34px;
   height: 34px;
@@ -255,6 +270,7 @@ input { font-family: inherit; }
 .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-sm { padding: 6px 14px; font-size: 12.5px; gap: 5px; }
 
 .btn-primary-xl {
   display: inline-flex;
@@ -396,30 +412,32 @@ input { font-family: inherit; }
 /* ============================================================
    STATUS PILLS
    ============================================================ */
+/* shadcn-style badge */
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  line-height: 1.6;
 }
-.pill-lg { padding: 4px 14px; font-size: 13px; }
 
 .pill-ok { background: var(--ok-bg); color: var(--ok-ink); border: 1px solid var(--ok-border); }
-.pill-warn { background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-border); animation: pillPulse 2s ease infinite; }
+.pill-warn { background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-border); }
 .pill-err { background: var(--err-bg); color: var(--err-ink); border: 1px solid var(--err-border); }
 
 .pill-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--ok);
   animation: dotPulse 2s ease infinite;
 }
-.pill-x { font-weight: 700; }
+.pill-x { font-weight: 600; font-size: 10px; }
 
 @keyframes pillPulse {
   0%, 100% { opacity: 1; }
@@ -427,7 +445,7 @@ input { font-family: inherit; }
 }
 @keyframes dotPulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
-  50% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
 }
 
 .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
@@ -449,19 +467,20 @@ input { font-family: inherit; }
 /* ============================================================
    PROGRESS BAR
    ============================================================ */
+/* shadcn-style progress */
 .progress-track {
-  height: 4px;
-  background: var(--border);
-  border-radius: 999px;
+  height: 8px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 9999px;
   overflow: hidden;
 }
-.progress-track.tall { height: 6px; }
+.progress-track.tall { height: 10px; }
 
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 999px;
-  transition: width 0.3s ease;
+  border-radius: 9999px;
+  transition: width 0.4s ease;
   position: relative;
   overflow: hidden;
 }
@@ -934,129 +953,90 @@ input { font-family: inherit; }
 /* ============================================================
    DEPLOYMENT CARD (Dashboard)
    ============================================================ */
+/* ── Deployment card (shadcn-style) ── */
 .dcard {
   display: flex;
   align-items: stretch;
-  border-radius: var(--radius);
+  border-radius: 0.75rem;
   border: 1px solid var(--border);
   background: var(--card);
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .dcard:hover {
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
+  box-shadow: 0 1px 3px 0 rgba(0,0,0,.04), 0 1px 2px -1px rgba(0,0,0,.04);
 }
 
-.dcard-rail { width: 4px; flex-shrink: 0; }
+.dcard-rail { width: 3px; flex-shrink: 0; border-radius: 3px 0 0 3px; }
 .rail-ok { background: var(--ok); }
 .rail-warn { background: var(--warn); animation: pillPulse 2s ease infinite; }
 .rail-err { background: var(--err); }
 
-.dcard-main { flex: 1; padding: 16px 20px; min-width: 0; }
-
-.dcard-top {
+.dcard-body {
+  flex: 1;
+  padding: 14px 18px;
+  min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.dcard-titlewrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
-
-.dcard-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+.dcard-row-1 {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  gap: 8px;
 }
-.dicon-ok { background: var(--ok-bg); color: var(--ok-ink); }
-.dicon-warn { background: var(--warn-bg); color: var(--warn-ink); }
-.dicon-err { background: var(--err-bg); color: var(--err-ink); }
-
-.dcard-title {
-  font-size: 15px;
+.dcard-name {
+  font-size: 14px;
   font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+.dcard-row-2 {
+  font-size: 11px;
+  color: var(--ink-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.dcard-sub {
-  font-size: 12px;
-  color: var(--ink-faint);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 2px;
+.dcard-row-3 {
+  margin-top: 4px;
 }
-
-.dcard-live {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.live-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.dcard-live-link {
   font-size: 13px;
-  color: var(--accent);
-  font-weight: 500;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.live-ext { opacity: 0.5; }
-
-.live-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--ok-ink);
+.dcard-err {
+  font-size: 13px;
+  color: var(--err-ink);
 }
 
-.dcard-building { margin-top: 10px; }
-.building-meta {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 6px;
-  font-size: 12px;
-}
-
-.dcard-failed { margin-top: 8px; font-size: 12px; }
-.err-ink-text { color: var(--err-ink); }
-
-.dcard-time {
+.dcard-date {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  padding: 16px;
-  gap: 4px;
-  border-left: 1px solid var(--border);
-  min-width: 80px;
-}
-.time-ago { font-size: 12px; color: var(--ink-faint); font-weight: 500; }
-.dcard-arrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 12px;
+  padding: 14px 18px;
+  gap: 1px;
+  flex-shrink: 0;
+  font-size: 12px;
   color: var(--ink-faint);
+  white-space: nowrap;
 }
-.dcard-timestamp {
-  font-size: 11.5px;
-  color: var(--ink-faint);
-}
-.chev { color: var(--ink-faint); transition: transform 0.2s; }
-.dcard:hover .chev { transform: translateX(3px); color: var(--accent); }
+
+/* Status icon colors used in detail view */
+.dicon-ok { background: var(--ok-bg); color: var(--ok-ink); }
+.dicon-warn { background: var(--warn-bg); color: var(--warn-ink); }
+.dicon-err { background: var(--err-bg); color: var(--err-ink); }
+.err-ink-text { color: var(--err-ink); }
 
 /* ============================================================
    ADD DEPLOYMENT

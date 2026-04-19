@@ -1,21 +1,20 @@
 import { useState, useMemo } from "react";
 import { useNavigate, Navigate } from "react-router";
-import { Plus, Search, Folder, Globe, ChevronRight, X } from "lucide-react";
-import { GithubIcon } from "../components/GithubIcon";
+import { Plus, Search, X } from "lucide-react";
 import { useAuth } from "../lib/AuthContext";
 import { deploymentSource, displayStatus, useProjects, type DisplayStatus } from "../lib/api";
 import { Reveal } from "../components/Reveal";
 import { Nav } from "../components/Nav";
 import type { DeploymentRead } from "../client/types.gen";
 
-function formatTimestamp(iso: string) {
+function formatDate(iso: string) {
   const d = new Date(iso);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  if (sameDay) return `Today at ${time}`;
-  const date = d.toLocaleDateString([], { month: "short", day: "numeric" });
-  return `${date} at ${time}`;
+  return d.toLocaleDateString([], { month: "numeric", day: "numeric", year: "numeric" });
+}
+
+function formatTime(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
 
 function statusCls(status: DisplayStatus) {
@@ -51,67 +50,34 @@ function DeploymentCard({ d, onClick }: { d: DeploymentRead; onClick: () => void
   return (
     <div onClick={onClick} className="dcard" style={{ cursor: "pointer" }}>
       <div className={`dcard-rail rail-${cls}`} />
-      <div className="dcard-main">
-        <div className="dcard-top">
-          <div className="dcard-titlewrap">
-            <div className={`dcard-icon dicon-${cls}`}>
-              {source.type === "github" ? <GithubIcon size={16} /> : <Folder size={16} />}
-            </div>
-            <div>
-              <h3 className="dcard-title">{d.name ?? "Untitled deployment"}</h3>
-              <div className="dcard-sub">
-                <span className={`mono${source.type === "local" ? " italic" : ""}`}>
-                  {source.label}
-                </span>
-                {d.exposed_ports?.[0] && (
-                  <>
-                    <span className="dot-sep">•</span>
-                    <span className="mono tiny">:{d.exposed_ports[0]}</span>
-                  </>
-                )}
-                <span className="dot-sep">•</span>
-                <span className="dcard-timestamp">{formatTimestamp(d.created_at)}</span>
-              </div>
-            </div>
-          </div>
+      <div className="dcard-body">
+        <div className="dcard-row-1">
+          <span className="dcard-name">{d.name ?? "Untitled deployment"}</span>
           <StatusPill status={status} />
         </div>
-
+        <div className="dcard-row-2">
+          {source.label}
+        </div>
         {status === "Running" && d.public_url && (
-          <div className="dcard-live">
-            <div className="live-url" style={{ cursor: "pointer" }} onClick={onClick}>
-              <Globe size={13} />
-              <span className="mono">{d.public_url}</span>
-              <ChevronRight size={12} className="live-ext" />
+          <div className="dcard-row-3">
+            <div className="dcard-live-link">
+              {d.public_url}
             </div>
           </div>
         )}
-
         {status === "Building" && (
-          <div className="dcard-building">
+          <div className="dcard-row-3">
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${progress}%` }}>
                 <span className="progress-sheen" aria-hidden />
               </div>
             </div>
-            <div className="building-meta">
-              <span className="mono">▸ Building…</span>
-              <span className="mono muted">{Math.round(progress)}%</span>
-            </div>
-          </div>
-        )}
-
-        {status === "Failed" && (
-          <div className="dcard-failed">
-            <span className="mono err-ink-text">
-              ⨯ {(d as DeploymentRead & { error?: string }).error ?? "Deployment failed"}
-            </span>
           </div>
         )}
       </div>
-
-      <div className="dcard-arrow">
-        <ChevronRight size={16} className="chev" />
+      <div className="dcard-date">
+        <span>{formatDate(d.created_at)}</span>
+        <span>{formatTime(d.created_at)}</span>
       </div>
     </div>
   );

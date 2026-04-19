@@ -48,7 +48,7 @@ export function Nav() {
           </div>
           <div className="nav-brandtext">
             <span className="nav-title">dploy</span>
-            <span className="nav-sub">deploy anything</span>
+            <span className="nav-sub">from dploy to deployed</span>
           </div>
         </a>
 
@@ -76,9 +76,7 @@ export function Nav() {
                 <span className="nav-username">{displayName}</span>
               </div>
               <button className="logout-btn" onClick={handleLogout} title="Sign out">
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <LogOut size={14} /> Logout
-                </span>
+                <LogOut size={12} /> Logout
               </button>
             </>
           )}

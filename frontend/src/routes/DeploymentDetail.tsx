@@ -49,7 +49,6 @@ export default function DeploymentDetail() {
   const source = deployment ? deploymentSource(deployment) : { type: "github" as const, label: "" };
   const name = deployment?.name ?? "Untitled deployment";
   const liveUrl = deployment?.public_url ?? null;
-  const port = deployment?.exposed_ports?.[0] ?? 3000;
   const elapsed = deployment
     ? (Date.now() - new Date(deployment.created_at).getTime()) / 1000
     : 0;
@@ -246,20 +245,14 @@ export default function DeploymentDetail() {
               )}
             </div>
             {liveUrl && (
-              <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="btn-primary">
-                <ExternalLink size={14} /> Open
+              <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="btn-primary btn-sm">
+                <ExternalLink size={12} /> Open
               </a>
             )}
           </div>
           <div className="detail-meta-row">
             <div className="detail-meta">
               <span className="mono">{source.label}</span>
-              {port && (
-                <>
-                  <span className="dot-sep">•</span>
-                  <span className="mono tiny">:{port}</span>
-                </>
-              )}
               <span className="dot-sep">•</span>
               <span className={`pill pill-${status === "Running" ? "ok" : status === "Building" ? "warn" : "err"}`}>
                 {status === "Running" && <span className="pill-dot" aria-hidden />}

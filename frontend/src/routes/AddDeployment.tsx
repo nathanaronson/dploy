@@ -174,13 +174,7 @@ export default function AddDeployment() {
 
         <Reveal delay={60}>
           <div className="add-header">
-            <div className="add-header-badge">
-              <Rocket size={14} /> New deployment
-            </div>
-            <h1 className="add-title">Let's ship something.</h1>
-            <p className="add-sub">
-              From repo to live URL — typically in <strong>38 seconds.</strong>
-            </p>
+            <h1 className="add-title">Deploy a new project.</h1>
           </div>
         </Reveal>
 
@@ -218,12 +212,12 @@ export default function AddDeployment() {
                 <Link size={13} /> Repository URL
               </span>
               <div className="url-input-wrap">
-                <span className="url-prefix">github.com/</span>
+                <span className="url-prefix"></span>
                 <input
                   autoFocus
                   value={displayUrl}
-                  onChange={(e) => setUrl("https://github.com/" + e.target.value)}
-                  placeholder="owner/repo"
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
                   className="url-input"
                   onKeyDown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -241,7 +235,7 @@ export default function AddDeployment() {
             </label>
 
             {/* Recent repos — permission gated */}
-            <div className="field">
+            <div className="field" style={{ marginTop: '12px' }}>
               <span className="field-label">
                 <GithubIcon size={13} /> Recent public repos
               </span>
@@ -288,7 +282,7 @@ export default function AddDeployment() {
                     <button
                       key={r.full}
                       className={`repo-card ${url.endsWith(r.full) ? "sel" : ""}`}
-                      onClick={() => setUrl("https://github.com/" + r.full)}
+                      onClick={() => setUrl(r.full)}
                     >
                       <div className="repo-card-l">
                         <GithubIcon size={14} />
@@ -391,20 +385,10 @@ export default function AddDeployment() {
               ) : (
                 <>
                   <Rocket size={16} /> Deploy
-                  <span className="kbd-inline-white">
-                    <span className="kbd kbd-light">⌘</span>
-                    <span className="kbd kbd-light">⏎</span>
-                  </span>
                   <span className="btn-shine" aria-hidden />
                 </>
               )}
             </button>
-
-            <div className="deploy-foot">
-              Press <span className="kbd">⌘</span><span className="kbd">⏎</span> to deploy
-              <span className="dot-sep">•</span>
-              <span className="kbd">Esc</span> to cancel
-            </div>
           </Reveal>
         ) : (
           <Reveal delay={180} className="add-panel">

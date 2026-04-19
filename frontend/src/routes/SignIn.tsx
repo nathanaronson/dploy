@@ -77,20 +77,7 @@ export default function SignIn() {
         <h1 className="signin-title">
           <span className="word">dploy</span>
         </h1>
-        <p className="signin-sub">One command. One minute. One live URL.</p>
-
-        {/* Stats strip */}
-        <div className="signin-stats">
-          <div className="stat-block">
-            <div className="stat-num">&lt;60<span className="unit">s</span></div>
-            <div className="stat-lbl">avg deploy</div>
-          </div>
-          <div className="stat-divider" />
-          <div className="stat-block">
-            <div className="stat-num">99.9<span className="unit">%</span></div>
-            <div className="stat-lbl">uptime</div>
-          </div>
-        </div>
+        <p className="signin-sub">From dploy to deployed.</p>
 
         <button
           onClick={handleSignIn}
@@ -110,12 +97,6 @@ export default function SignIn() {
           )}
           <span className="btn-shine" aria-hidden />
         </button>
-
-        <div className="signin-foot">
-          <span className="kbd">⌘ K</span>
-          <span>or</span>
-          <code className="inline-code">dploy login</code>
-        </div>
       </div>
     </div>
   );
