@@ -90,11 +90,6 @@ export default function SignIn() {
             <div className="stat-num">99.9<span className="unit">%</span></div>
             <div className="stat-lbl">uptime</div>
           </div>
-          <div className="stat-divider" />
-          <div className="stat-block">
-            <div className="stat-num">3<span className="unit">x</span></div>
-            <div className="stat-lbl">regions</div>
-          </div>
         </div>
 
         <button

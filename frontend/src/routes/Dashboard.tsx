@@ -216,11 +216,29 @@ export default function Dashboard() {
             />
             <MetricMini
               label="Avg build time"
-              value="~38s"
+              value={(() => {
+                if (!deployments.length) return '0s';
+                // Only consider deployments that have a finished time
+                const times = deployments
+                  .map((d) => {
+                    const created = new Date(d.created_at).getTime();
+                    // Use finished_at if available, else use updated_at if status is not building/pending/analyzing
+                    const finished = d.finished_at
+                      ? new Date(d.finished_at).getTime()
+                      : (d.status === 'running' || d.status === 'failed' || d.status === 'stopped') && d.updated_at
+                        ? new Date(d.updated_at).getTime()
+                        : null;
+                    return finished && finished > created ? finished - created : null;
+                  })
+                  .filter((t) => t !== null) as number[];
+                if (!times.length) return '0s';
+                const avg = Math.round(times.reduce((a, b) => a + b, 0) / times.length / 1000);
+                return `${avg}s`;
+              })()}
               delta="across active"
               seed={7}
             />
-            <button className="deploy-card-cta" onClick={() => navigate("/add")}>
+            <button className="deploy-card-cta shiny-btn" onClick={() => navigate("/add")}> 
               <span className="deploy-card-plus" aria-hidden>
                 <Plus size={14} />
               </span>
@@ -293,10 +311,12 @@ export default function Dashboard() {
                 <>
                   <p>No deployments yet</p>
                   <button
-                    className="btn-primary"
+                    className="btn-primary shiny-btn"
                     onClick={() => navigate("/add")}
+                    style={{ position: 'relative', overflow: 'hidden' }}
                   >
                     <Plus size={14} /> Deploy your first project
+                    <span className="btn-shine" aria-hidden />
                   </button>
                 </>
               )}
