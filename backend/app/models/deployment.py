@@ -78,6 +78,15 @@ class Deployment(Base):
     # Format: "<provider>/<model-id>", e.g. "anthropic/claude-haiku-4-5".
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # "web" (default) — app binds a port, deploy pipeline tunnels it.
+    # "cli"            — app is an interactive binary; no port, attach via
+    #                    web terminal instead.
+    kind: Mapped[str] = mapped_column(String(16), default="web", nullable=False)
+
+    # argv for the web terminal to spawn under a PTY. Populated by Agent #1
+    # for CLI deployments; otherwise falls back to shlex-split(start_command).
+    entrypoint: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
     # Filled in by Agent #1 once it inspects the code.
     runtime: Mapped[str | None] = mapped_column(String(32), nullable=True)
     package_manager: Mapped[str | None] = mapped_column(String(32), nullable=True)

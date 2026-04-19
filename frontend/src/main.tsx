@@ -11,6 +11,7 @@ import SignIn from "./routes/SignIn";
 import Dashboard from "./routes/Dashboard";
 import AddDeployment from "./routes/AddDeployment";
 import DeploymentDetail from "./routes/DeploymentDetail";
+import Terminal from "./routes/Terminal";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -22,6 +23,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/add" element={<AddDeployment />} />
             <Route path="/deployment/:id" element={<DeploymentDetail />} />
+            <Route path="/deployment/:id/terminal" element={<Terminal />} />
           </Routes>
         </BrowserRouter>
         <Toaster position="bottom-right" />

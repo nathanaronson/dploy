@@ -100,10 +100,13 @@ this shape to the same path and reply with `{FAILURE_SENTINEL}`:
 
 _ANALYZE_SCHEMA = """\
 {
+  "kind":             "web | cli",           // see classification rules below
   "runtime":          "node | python | go | rust | ruby | java | static | docker | unknown",
   "package_manager":  "npm | pnpm | yarn | bun | pip | uv | poetry | go | cargo | bundler | maven | none",
   "install_commands": ["array", "of", "shell strings to run from the project root"],
   "build_commands":   ["optional, runs after install, before start"],
+  // For kind="web": one entry per long-running service (frontend, backend,
+  // worker, db). For kind="cli": leave empty and use `start_command` below.
   "start_commands":   [
     {
       "label":     "short name, e.g. 'backend', 'frontend', 'db', 'worker'",
@@ -111,6 +114,8 @@ _ANALYZE_SCHEMA = """\
       "port_hint": 8000   // integer, or null if the service doesn't listen (e.g. a worker)
     }
   ],
+  // Only set for kind="cli": the command that launches the CLI binary once.
+  "start_command":    "single shell string for kind=cli; null for kind=web",
   "env_required":     ["NAMES_ONLY", "no values"],
   "notes":            "1-2 sentences explaining the choice",
   "confidence":       "high | medium | low"
@@ -136,6 +141,30 @@ Your job is to look at the project at {REPO_DIR} and decide:
 
 You DO NOT run the install or start commands. You only read files. Agent #2
 will execute your plan.
+
+# Classifying kind: "web" vs "cli"
+
+Most repos are web apps — set `kind="web"`. A few are CLIs or batch tools;
+set `kind="cli"` when:
+
+  * The project has no HTTP server, no port binding, no framework like
+    FastAPI/Flask/Express/Next/etc.
+  * It's a command-line tool, REPL, TUI, or one-shot script that reads
+    stdin / args and writes stdout.
+  * Clues: `[project.scripts]` in pyproject.toml with no web framework in
+    deps; `package.json` with a top-level `bin` field and no `start`/`dev`
+    script; a `main.go` that doesn't call `http.ListenAndServe`; a repo
+    whose README talks about `./mytool --help` instead of a URL.
+
+For kind="cli":
+  * `start_command` is the command that *launches the CLI once* — e.g.
+    `python3 -u -i` for a REPL, `./mytool --serve` for a long-running CLI,
+    `uv run mytool` for a uv-packaged entrypoint.
+  * `port_hint` MUST be null.
+  * The start_command does NOT need to bind to 0.0.0.0; port rules below
+    don't apply.
+  * Agent #2 will be skipped — the orchestrator runs install/build itself
+    and then attaches the browser terminal to the binary on demand.
 
 # Tool discipline
 
