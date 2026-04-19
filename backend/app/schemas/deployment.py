@@ -29,6 +29,12 @@ class DeploymentCreate(BaseModel):
         return self
 
 
+class DeploymentUpdate(BaseModel):
+    """Request body for updating a deployment (partial)."""
+
+    name: str | None = None
+
+
 class AgentRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

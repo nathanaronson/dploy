@@ -16,6 +16,7 @@ from app.schemas.deployment import (
     DeploymentDetail,
     DeploymentList,
     DeploymentRead,
+    DeploymentUpdate,
 )
 from app.services.deploy import run_deployment, teardown_deployment
 
@@ -108,6 +109,23 @@ async def get_agent_run(
     if run is None or run.deployment_id != deployment_id:
         raise HTTPException(status_code=404, detail="Agent run not found")
     return run
+
+
+@router.patch("/{deployment_id}", response_model=DeploymentRead)
+async def update_deployment(
+    deployment_id: str,
+    payload: DeploymentUpdate,
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Deployment:
+    deployment = await session.get(Deployment, deployment_id)
+    if deployment is None or deployment.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    if payload.name is not None:
+        deployment.name = payload.name
+    await session.commit()
+    await session.refresh(deployment)
+    return deployment
 
 
 @router.delete("/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)

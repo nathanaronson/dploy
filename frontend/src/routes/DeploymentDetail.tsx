@@ -1,17 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams, useNavigate, Navigate } from "react-router";
 import {
-  ArrowLeft, Globe, Terminal, Key, Cpu, Copy, Download,
-  ChevronRight, Trash, X, Rocket, ExternalLink, Mail, MessageSquare,
+  ArrowLeft, Globe, Terminal, Copy, Download,
+  ChevronRight, Trash, X, Rocket, ExternalLink, Mail, MessageSquare, Pencil, Check,
 } from "lucide-react";
 import { GithubIcon } from "../components/GithubIcon";
 import { toast } from "sonner";
 import { useAuth } from "../lib/AuthContext";
-import { useProject, useDeleteDeployment, displayStatus, deploymentSource, deploymentLogLines } from "../lib/api";
+import { useProject, useDeleteDeployment, useRenameDeployment, displayStatus, deploymentSource, deploymentLogLines } from "../lib/api";
 import { Reveal } from "../components/Reveal";
-import { Sparkline } from "../components/Sparkline";
 import { Nav } from "../components/Nav";
-import type { DeploymentRead } from "../client/types.gen";
 
 const BUILD_STEPS = ["Clone", "Detect", "Install", "Build", "Package", "Upload", "Route", "Live"];
 
@@ -28,20 +26,8 @@ const MOCK_LOG_LINES = [
   { txt: "dist/assets/index-4f8a3.js   148.23 kB │ gzip: 47.82 kB", kind: "muted" },
   { txt: "✓ built in 3.82s", kind: "ok" },
   { txt: "Packaging container image…", kind: "" },
-  { txt: "Uploading to us-east-1…", kind: "" },
+  { txt: "Uploading…", kind: "" },
 ];
-
-function RunningMetric({ label, value, spark }: { label: string; value: string; spark: number }) {
-  return (
-    <div className="running-metric">
-      <div className="rm-top">
-        <span className="rm-label">{label}</span>
-        <Sparkline seed={spark} color="var(--ok-ink)" width={52} height={18} />
-      </div>
-      <div className="rm-val">{value}</div>
-    </div>
-  );
-}
 
 export default function DeploymentDetail() {
   const { id } = useParams();
@@ -49,9 +35,13 @@ export default function DeploymentDetail() {
   const { user, loading: authLoading } = useAuth();
   const { data: deployment, isLoading, isError } = useProject(id, { poll: true });
   const deleteMutation = useDeleteDeployment();
+  const renameMutation = useRenameDeployment();
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const logsRef = useRef<HTMLDivElement>(null);
 
   // Derived values
@@ -60,7 +50,6 @@ export default function DeploymentDetail() {
   const name = deployment?.name ?? "Untitled deployment";
   const liveUrl = deployment?.public_url ?? null;
   const port = deployment?.exposed_ports?.[0] ?? 3000;
-  const region = "us-east-1";
   const elapsed = deployment
     ? (Date.now() - new Date(deployment.created_at).getTime()) / 1000
     : 0;
@@ -85,7 +74,6 @@ export default function DeploymentDetail() {
         return { txt, kind };
       });
     }
-    // Show mock logs progressively during building
     if (status === "Building") {
       const showCount = Math.min(MOCK_LOG_LINES.length, Math.floor(elapsed / 2) + 1);
       return MOCK_LOG_LINES.slice(0, showCount);
@@ -111,6 +99,32 @@ export default function DeploymentDetail() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [deleteOpen, deleteMutation.isPending]);
+
+  // Focus name input when editing starts
+  useEffect(() => {
+    if (editing && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [editing]);
+
+  const startEditing = () => {
+    setEditName(name);
+    setEditing(true);
+  };
+
+  const saveName = () => {
+    const trimmed = editName.trim();
+    setEditing(false);
+    if (!id || !trimmed || trimmed === name) return;
+    renameMutation.mutate(
+      { id, name: trimmed },
+      {
+        onSuccess: () => toast.success(`Renamed to "${trimmed}"`),
+        onError: () => toast.error("Failed to rename deployment"),
+      },
+    );
+  };
 
   const confirmDelete = () => {
     if (!id) return;
@@ -205,7 +219,31 @@ export default function DeploymentDetail() {
               <div className={`detail-icon dicon-${status === "Running" ? "ok" : status === "Building" ? "warn" : "err"}`}>
                 {source.type === "github" ? <GithubIcon size={20} /> : <Terminal size={20} />}
               </div>
-              <h1 className="detail-title">{name}</h1>
+              {editing ? (
+                <div className="detail-name-edit">
+                  <input
+                    ref={nameInputRef}
+                    className="detail-name-input"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveName();
+                      if (e.key === "Escape") setEditing(false);
+                    }}
+                    onBlur={saveName}
+                  />
+                  <button className="icon-btn-sm" onClick={saveName} title="Save">
+                    <Check size={14} />
+                  </button>
+                </div>
+              ) : (
+                <div className="detail-name-row">
+                  <h1 className="detail-title">{name}</h1>
+                  <button className="icon-btn-sm" onClick={startEditing} title="Edit name">
+                    <Pencil size={13} />
+                  </button>
+                </div>
+              )}
             </div>
             {liveUrl && (
               <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="btn-primary">
@@ -243,9 +281,9 @@ export default function DeploymentDetail() {
           <Reveal delay={100} className="banner banner-warn">
             <div className="banner-top">
               <div className="banner-title-wrap">
-                <span className="big-spinner" aria-hidden />
+                <span className="status-dot-lg dot-warn" aria-hidden />
                 <div>
-                  <div className="banner-title">Deploying to {region}…</div>
+                  <div className="banner-title">Building…</div>
                   <div className="banner-sub">
                     ETA {Math.max(0, Math.round(29.5 - elapsed))}s · step{" "}
                     {Math.min(8, Math.floor(elapsed / 4) + 1)} of 8
@@ -281,10 +319,9 @@ export default function DeploymentDetail() {
           <Reveal delay={100} className="banner banner-ok">
             <div className="banner-top">
               <div className="banner-title-wrap">
-                <span className="live-dot-big" aria-hidden />
+                <span className="status-dot-lg dot-ok" aria-hidden />
                 <div>
                   <div className="banner-title">Live</div>
-                  <div className="banner-sub">Deployed and serving traffic</div>
                 </div>
               </div>
             </div>
@@ -316,12 +353,6 @@ export default function DeploymentDetail() {
                 </button>
               </div>
             </div>
-            <div className="running-metrics">
-              <RunningMetric label="Requests" value="—" spark={3} />
-              <RunningMetric label="p50 latency" value="42ms" spark={1} />
-              <RunningMetric label="p99 latency" value="128ms" spark={4} />
-              <RunningMetric label="Uptime" value="just now" spark={6} />
-            </div>
           </Reveal>
         )}
 
@@ -330,7 +361,7 @@ export default function DeploymentDetail() {
           <Reveal delay={100} className="banner banner-err">
             <div className="banner-top">
               <div className="banner-title-wrap">
-                <div className="err-circle"><X size={16} /></div>
+                <span className="status-dot-lg dot-err" aria-hidden />
                 <div>
                   <div className="banner-title">Deployment failed</div>
                   <div className="banner-sub">
@@ -395,26 +426,6 @@ export default function DeploymentDetail() {
             </div>
           </div>
         </Reveal>
-
-        {/* Info grid */}
-        <div className="info-grid">
-          <Reveal delay={200} className="info-card">
-            <div className="info-title"><Key size={13} /> Environment</div>
-            <div className="kv">
-              <div><span className="k">NODE_ENV</span><span className="v">production</span></div>
-              <div><span className="k">PORT</span><span className="v">{port}</span></div>
-              <div><span className="k">DB_URL</span><span className="v masked">•••••••••••••</span></div>
-            </div>
-          </Reveal>
-          <Reveal delay={240} className="info-card">
-            <div className="info-title"><Cpu size={13} /> Resources</div>
-            <div className="kv">
-              <div><span className="k">Memory</span><span className="v">512MB / 1GB</span></div>
-              <div><span className="k">CPU</span><span className="v">0.3 / 2 vCPU</span></div>
-              <div><span className="k">Region</span><span className="v">{region}</span></div>
-            </div>
-          </Reveal>
-        </div>
 
         {/* Delete modal */}
         {deleteOpen && (

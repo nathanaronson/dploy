@@ -1,22 +1,21 @@
 import { useState, useMemo } from "react";
 import { useNavigate, Navigate } from "react-router";
-import { Plus, Search, Folder, Globe, Activity, ChevronRight, X } from "lucide-react";
+import { Plus, Search, Folder, Globe, ChevronRight, X } from "lucide-react";
 import { GithubIcon } from "../components/GithubIcon";
 import { useAuth } from "../lib/AuthContext";
 import { deploymentSource, displayStatus, useProjects, type DisplayStatus } from "../lib/api";
 import { Reveal } from "../components/Reveal";
-import { Sparkline } from "../components/Sparkline";
 import { Nav } from "../components/Nav";
 import type { DeploymentRead } from "../client/types.gen";
 
-function timeAgo(iso: string) {
-  const now = Date.now();
-  const t = new Date(iso).getTime();
-  const m = Math.floor((now - t) / 60000);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+function formatTimestamp(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (sameDay) return `Today at ${time}`;
+  const date = d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `${date} at ${time}`;
 }
 
 function statusCls(status: DisplayStatus) {
@@ -32,37 +31,14 @@ function buildProgress(d: DeploymentRead): number {
   return 0;
 }
 
-function StatusPill({ status, size }: { status: DisplayStatus; size?: "lg" }) {
+function StatusPill({ status }: { status: DisplayStatus }) {
   const cls = statusCls(status);
   return (
-    <span className={`pill pill-${cls} ${size === "lg" ? "pill-lg" : ""}`}>
+    <span className={`pill pill-${cls}`}>
       {status === "Running" && <span className="pill-dot" aria-hidden />}
       {status === "Failed" && <span className="pill-x" aria-hidden>✕</span>}
       {status}
     </span>
-  );
-}
-
-function MetricMini({
-  label,
-  value,
-  delta,
-  seed,
-}: {
-  label: string;
-  value: string | number;
-  delta: string;
-  seed: number;
-}) {
-  return (
-    <div className="metric-mini metric-ok">
-      <div className="metric-head">
-        <span className="metric-lbl">{label}</span>
-        <Sparkline seed={seed} color="var(--ok-ink)" />
-      </div>
-      <div className="metric-val">{value}</div>
-      <div className="metric-delta">{delta}</div>
-    </div>
   );
 }
 
@@ -73,7 +49,7 @@ function DeploymentCard({ d, onClick }: { d: DeploymentRead; onClick: () => void
   const progress = buildProgress(d);
 
   return (
-    <div onClick={onClick} className={`dcard`} style={{ cursor: 'pointer' }}>
+    <div onClick={onClick} className="dcard" style={{ cursor: "pointer" }}>
       <div className={`dcard-rail rail-${cls}`} />
       <div className="dcard-main">
         <div className="dcard-top">
@@ -93,6 +69,8 @@ function DeploymentCard({ d, onClick }: { d: DeploymentRead; onClick: () => void
                     <span className="mono tiny">:{d.exposed_ports[0]}</span>
                   </>
                 )}
+                <span className="dot-sep">•</span>
+                <span className="dcard-timestamp">{formatTimestamp(d.created_at)}</span>
               </div>
             </div>
           </div>
@@ -101,14 +79,10 @@ function DeploymentCard({ d, onClick }: { d: DeploymentRead; onClick: () => void
 
         {status === "Running" && d.public_url && (
           <div className="dcard-live">
-            <div className="live-url" style={{ cursor: 'pointer' }} onClick={onClick}>
+            <div className="live-url" style={{ cursor: "pointer" }} onClick={onClick}>
               <Globe size={13} />
               <span className="mono">{d.public_url}</span>
-              <ChevronRight size={12} className="live-ext" style={{ cursor: 'pointer' }} />
-            </div>
-            <div className="live-meta">
-              <span><Activity size={12} /> live</span>
-              <Sparkline seed={d.id.charCodeAt(0)} color="var(--ok-ink)" width={60} height={20} />
+              <ChevronRight size={12} className="live-ext" />
             </div>
           </div>
         )}
@@ -136,8 +110,7 @@ function DeploymentCard({ d, onClick }: { d: DeploymentRead; onClick: () => void
         )}
       </div>
 
-      <div className="dcard-time">
-        <div className="time-ago">{timeAgo(d.created_at)}</div>
+      <div className="dcard-arrow">
         <ChevronRight size={16} className="chev" />
       </div>
     </div>
@@ -178,77 +151,16 @@ export default function Dashboard() {
     });
   }, [deployments, filter, q]);
 
-  const displayName = user.name ?? user.login ?? "there";
-
   return (
     <div style={{ background: "var(--bg)", minHeight: "100vh" }}>
       <Nav />
       <div className="dash-wrap">
-        {/* Hero strip */}
+        {/* Hero strip — simplified */}
         <Reveal className="dash-hero">
-          <div>
-            <div className="greet">
-              <span className="greet-wave" aria-hidden>👋</span>
-              Welcome back,&nbsp;<strong>{displayName}</strong>
-            </div>
-            <h2 className="dash-h2">Your Deployments</h2>
-            <p className="dash-sub">
-              <span className="ok-chip">
-                <span className="status-dot dot-ok" aria-hidden /> {counts.running} live
-              </span>
-              <span className="warn-chip">
-                <span className="status-dot dot-warn" aria-hidden /> {counts.building} building
-              </span>
-              {counts.failed > 0 && (
-                <span className="err-chip">
-                  <span className="status-dot dot-err" aria-hidden /> {counts.failed} failed
-                </span>
-              )}
-            </p>
-          </div>
-
-          <div className="dash-hero-right">
-            <MetricMini
-              label="Deployments"
-              value={deployments.length}
-              delta={`${counts.running} active`}
-              seed={3}
-            />
-            <MetricMini
-              label="Avg build time"
-              value={(() => {
-                if (!deployments.length) return '0s';
-                // Only consider deployments that have a finished time
-                const times = deployments
-                  .map((d) => {
-                    const created = new Date(d.created_at).getTime();
-                    // Use finished_at if available, else use updated_at if status is not building/pending/analyzing
-                    const finished = d.finished_at
-                      ? new Date(d.finished_at).getTime()
-                      : (d.status === 'running' || d.status === 'failed' || d.status === 'stopped') && d.updated_at
-                        ? new Date(d.updated_at).getTime()
-                        : null;
-                    return finished && finished > created ? finished - created : null;
-                  })
-                  .filter((t) => t !== null) as number[];
-                if (!times.length) return '0s';
-                const avg = Math.round(times.reduce((a, b) => a + b, 0) / times.length / 1000);
-                return `${avg}s`;
-              })()}
-              delta="across active"
-              seed={7}
-            />
-            <button className="deploy-card-cta shiny-btn" onClick={() => navigate("/add")}> 
-              <span className="deploy-card-plus" aria-hidden>
-                <Plus size={14} />
-              </span>
-              <span className="deploy-card-label-wrap">
-                <span className="deploy-card-main">New Deployment</span>
-                <span className="deploy-card-sub">ship in ~&lt;60s</span>
-              </span>
-              <span className="btn-shine" aria-hidden />
-            </button>
-          </div>
+          <h2 className="dash-h2">Your Deployments</h2>
+          <button className="btn-primary" onClick={() => navigate("/add")}>
+            <Plus size={14} /> Add Deployment
+          </button>
         </Reveal>
 
         {/* Controls */}
@@ -258,8 +170,8 @@ export default function Dashboard() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search deployments…"
-              aria-label="Search deployments"
+              placeholder="Search active deployments…"
+              aria-label="Search active deployments"
             />
             {q && (
               <button
@@ -311,12 +223,10 @@ export default function Dashboard() {
                 <>
                   <p>No deployments yet</p>
                   <button
-                    className="btn-primary shiny-btn"
+                    className="btn-primary"
                     onClick={() => navigate("/add")}
-                    style={{ position: 'relative', overflow: 'hidden' }}
                   >
                     <Plus size={14} /> Deploy your first project
-                    <span className="btn-shine" aria-hidden />
                   </button>
                 </>
               )}
