@@ -36,7 +36,7 @@ from app.services.sandbox import Sandbox
 
 log = logging.getLogger(__name__)
 
-POOL_SIZE = 1
+POOL_SIZE = 3
 WARM_TTL_S = 25 * 60  # refresh before Modal's 30-min timeout kicks in
 
 
