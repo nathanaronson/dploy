@@ -36,9 +36,9 @@ LIST_DIR: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Absolute path inside the VM. The project root is "
-                    "/home/machine/repo. Default: project root."
+                    "/root/.openclaw/workspace/repo. Default: project root."
                 ),
-                "default": "/home/machine/repo",
+                "default": "/root/.openclaw/workspace/repo",
             },
             "max_depth": {
                 "type": "integer",

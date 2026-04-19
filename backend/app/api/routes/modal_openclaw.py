@@ -112,13 +112,21 @@ print(f"Health: {out}")
 # out = run(sb, "openclaw doctor --fix")
 # print(f"Doctor: {out}")
 
+print("Github: Get thing")
+repo_link = "https://github.com/samuel-lao/personal-website"
+out = run(sb, f"git clone {repo_link} /root/.openclaw/workspace/repo")
+
 # --- Step 6: Chat ---
 print("\nSending chat message...")
+payload = json.dumps({
+    "model": "openclaw/default",
+    "messages": [{"role": "user", "content": f"List ALL files in the repo folder. Do not forget any."}],
+})
 response = run(
     sb,
-    "curl -sS http://127.0.0.1:18789/v1/chat/completions "
-    "-H 'Content-Type: application/json' "
-    """-d '{"model":"openclaw/default","messages":[{"role":"user","content":"Hello! What are you?"}]}'""",
+    f"curl -sS http://127.0.0.1:18789/v1/chat/completions "
+    f"-H 'Content-Type: application/json' "
+    f"-d '{payload}'",
     timeout=120,
 )
 try:
