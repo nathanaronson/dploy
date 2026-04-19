@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./app.db"
     db_echo: bool = False
 
+    # Logging. LOG_LEVEL applies to our app loggers; LOG_LEVEL_THIRD_PARTY
+    # caps noisy upstream libraries (httpx, modal, anthropic, sqlalchemy).
+    log_level: str = "INFO"
+    log_level_third_party: str = "WARNING"
+
     # GitHub App (user-to-server "Login with GitHub" flow).
     github_client_id: str = ""
     github_client_secret: str = ""
