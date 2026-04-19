@@ -1,0 +1,76 @@
+{
+    "gateway": {
+      "mode": "local",
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    "meta": {
+      "lastTouchedVersion": "2026.4.15",
+      "lastTouchedAt": "2026-04-19T09:07:52.822Z"
+    },
+    "tools": {
+      "deny": [
+        "web_search",
+        "image_generate",
+        "image_edit",
+        "music_generate",
+        "video_generate",
+        "browser",
+        "browser_navigate",
+        "browser_screenshot",
+        "pdf",
+        "sound_generate",
+        "computer_use",
+        "discord_send",
+        "slack_send"
+      ]
+    },
+    "agents": {
+      "defaults": {
+        "experimental": {
+          "localModelLean": true
+        },
+        "model": {
+          "primary": "anthropic/claude-haiku-4-5"
+        }
+      }
+    },
+    "plugins": {
+      "entries": {
+        "bonjour": {
+          "enabled": false
+        },
+        "bedrock-mantle-discovery": {
+          "enabled": false
+        },
+        "xai": {
+          "enabled": false
+        },
+        "browser": {
+          "enabled": false
+        },
+        "device-pair": {
+          "enabled": false
+        },
+        "memory-core": {
+          "enabled": false
+        },
+        "phone-control": {
+          "enabled": false
+        },
+        "talk-voice": {
+          "enabled": false
+        }
+      }
+    },
+    "env": {
+      "vars": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
