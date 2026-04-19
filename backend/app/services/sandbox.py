@@ -17,8 +17,12 @@ The Modal SDK is synchronous; async callers should wrap in
 Image content
 -------------
 Debian + curl/git + Node 22 + global pnpm/yarn/bun + Python 3 + Go +
-OpenClaw (npm-installed globally, config baked in for gateway + LLM keys).
-The model is set at runtime, not baked, so it can change per deployment.
+OpenClaw (npm-installed globally). The OpenClaw config (gateway mode,
+denied tools, disabled plugins, default model, env var bindings) is
+baked into the image as a single `config.json` file copied from
+`backend/app/openclaw.json` — no shell-command ladder, no `openclaw config
+set` quoting landmines. The Anthropic API key is injected at runtime via
+a Modal Secret so the image is reusable across key rotations.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import shlex
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -71,104 +76,23 @@ TTYD_BIN = "/usr/local/bin/ttyd"
 _IMAGE: modal.Image | None = None
 _APP: modal.App | None = None
 
+# Canonical OpenClaw config — the single source of truth. Mounted into every
+# sandbox at ~/.openclaw/openclaw.json (NOT baked into an image layer), so
+# editing this file does not invalidate the image cache. The first thing the
+# OpenClaw gateway does when it starts is read this file, so all gateway
+# settings (denied tools, disabled plugins, default model, env var bindings,
+# cache control, etc.) take effect on first boot without any `openclaw
+# config set` shell ladder.
+#
+# Path note: OpenClaw reads `$OPENCLAW_STATE_DIR/openclaw.json` (NOT
+# `config.json` — that name causes the gateway to fall back to its empty
+# defaults and complain "existing config is missing gateway.mode"). Since
+# we run as root, $HOME=/root and OPENCLAW_STATE_DIR=/root/.openclaw.
+OPENCLAW_CONFIG_HOST_PATH = Path(__file__).resolve().parent.parent / "openclaw.json"
+OPENCLAW_CONFIG_REMOTE_PATH = "/root/.openclaw/openclaw.json"
+
 
 def _build_image() -> modal.Image:
-    settings = get_settings()
-    anthropic_key = settings.anthropic_api_key
-    openai_key = ""  # not in settings yet; add if needed
-
-    # Tools we explicitly deny. Keep the file/exec/http tools the deployment
-    # agents need (exec, read_file, write_file, edit_file, list_dir, glob,
-    # grep, web_fetch, todo_write). Deny everything heavy/multimedia that the
-    # agents would never use for our install-and-expose task — every disabled
-    # tool's schema disappears from the system prompt sent to Anthropic on
-    # every turn, saving prefill tokens.
-    DENIED_TOOLS = [
-        "web_search",
-        "image_generate",
-        "image_edit",
-        "music_generate",
-        "video_generate",
-        "browser",
-        "browser_navigate",
-        "browser_screenshot",
-        "pdf",
-        "sound_generate",
-        "computer_use",
-        "discord_send",
-        "slack_send",
-    ]
-    deny_json = json.dumps(DENIED_TOOLS)
-
-    # Plugins we explicitly disable. Observed loading on every chat in our
-    # diagnostic dump:
-    #   bonjour            — multicast DNS service advertising (~30s of retries
-    #                        in a Modal sandbox where mDNS goes nowhere)
-    #   bedrock-mantle-discovery — AWS Bedrock auth probe (we use Anthropic
-    #                              direct; this prints "Mantle IAM token
-    #                              generation unavailable" 3x per chat)
-    #   xai                — xAI provider tool factory
-    #   browser            — headless browser control (we deny browser tools)
-    #   device-pair, memory-core, phone-control, talk-voice — interactive
-    #                        plugins for chat clients (we're a backend deploy
-    #                        bot, not a chat UX)
-    # Each disabled plugin shrinks the system prompt OpenClaw injects on
-    # every model turn AND removes init time on first chat.
-    DISABLED_PLUGINS = [
-        "bonjour",
-        "bedrock-mantle-discovery",
-        "xai",
-        "browser",
-        "device-pair",
-        "memory-core",
-        "phone-control",
-        "talk-voice",
-    ]
-    plugin_cmds = [
-        f"openclaw config set plugins.entries.{p}.enabled false 2>/dev/null || true"
-        for p in DISABLED_PLUGINS
-    ]
-
-    # Anthropic prompt caching. The Anthropic cache TTL silently dropped from
-    # 1h to 5m in March 2026, so explicit ttl="1h" matters — without it our
-    # static system prompt gets re-billed on every tool turn.
-    cache_block = json.dumps({"type": "ephemeral", "ttl": "1h"})
-    cache_cmds = [
-        f"openclaw config set agents.defaults.prompts.cacheControl.soul "
-        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
-        f"openclaw config set agents.defaults.prompts.cacheControl.agents "
-        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
-    ]
-
-    config_cmds = [
-        "openclaw config set gateway.mode local",
-        "openclaw config set gateway.http.endpoints.chatCompletions.enabled true",
-        # Clear any allowlist that earlier config-set calls may have created.
-        # Without this, OpenClaw rejects every model except the primary with
-        # "Model X is not allowed", which silently breaks per-deployment
-        # model overrides.
-        "openclaw config unset agents.defaults.models 2>/dev/null || true",
-        # Disable unused tools (deny always wins over allow). Shrinks every
-        # LLM turn's system prompt by however many tool schemas these
-        # represent.
-        f"openclaw config set tools.deny {shlex.quote(deny_json)} --strict-json",
-        # Lean mode: drops heavyweight default tools (browser, cron, message)
-        # from the injected system prompt. Documented as for local models but
-        # also helps when we're trimming the prompt aggressively.
-        "openclaw config set agents.defaults.experimental.localModelLean true "
-        "2>/dev/null || true",
-        *plugin_cmds,
-        *cache_cmds,
-    ]
-    if anthropic_key:
-        config_cmds.append(
-            f'openclaw config set env.vars.ANTHROPIC_API_KEY "{anthropic_key}"'
-        )
-    if openai_key:
-        config_cmds.append(
-            f'openclaw config set env.vars.OPENAI_API_KEY "{openai_key}"'
-        )
-
     env_inline = (
         "PATH=/root/.cargo/bin:/root/.npm-global/bin:$PATH HOME=/root "
         "OPENCLAW_STATE_DIR=/root/.openclaw "
@@ -205,14 +129,15 @@ def _build_image() -> modal.Image:
             # this 4 MB download.
             f"curl -fsSL {TTYD_URL} -o {TTYD_BIN} && chmod +x {TTYD_BIN} "
             f"&& {TTYD_BIN} --version >/dev/null",
-            # Bake openclaw config (cached layer).
-            f"{env_inline} bash -c " + json.dumps(" && ".join(config_cmds)),
-            # Warm Node compile cache.
             f"{env_inline} openclaw --version >/dev/null",
-            # Pre-warm the gateway: boot it briefly so V8 JITs the gateway
-            # code paths, then kill it. Cuts ~3-5s off cold-start at runtime
-            # because the bytecode cache is already populated.
+            # Pre-warm the gateway: boot it briefly with a throwaway minimal
+            # config so V8 JITs the gateway code paths, then kill it. Cuts
+            # ~3-5s off cold-start at runtime because the bytecode cache is
+            # already populated. We can't use the canonical openclaw.json
+            # here because it's mounted at runtime, not baked — so we drop
+            # a stub in place just for this warm step and remove it.
             f"{env_inline} bash -c '"
+            'echo \'{"gateway":{"mode":"local"}}\' > /root/.openclaw/openclaw.json && '
             "nohup openclaw gateway run --auth none > /tmp/gw-warm.log 2>&1 & "
             "GW_PID=$!; "
             "for i in $(seq 1 40); do "
@@ -221,6 +146,7 @@ def _build_image() -> modal.Image:
             "done; "
             "kill -9 $GW_PID 2>/dev/null; "
             "wait $GW_PID 2>/dev/null; "
+            "rm -f /root/.openclaw/openclaw.json; "
             "true'",
         )
         .env({
@@ -232,6 +158,15 @@ def _build_image() -> modal.Image:
             "OPENCLAW_NO_RESPAWN": "1",
             "DEBIAN_FRONTEND": "noninteractive",
         })
+        # MUST be the final step — Modal disallows any build operation after
+        # an `add_local_*`. Mounted at runtime (copy=False is the default),
+        # so editing openclaw.json does NOT invalidate the image cache.
+        # The file is shipped with each sandbox at startup, not baked into
+        # a layer. Image stays cached across config tweaks.
+        .add_local_file(
+            str(OPENCLAW_CONFIG_HOST_PATH),
+            OPENCLAW_CONFIG_REMOTE_PATH,
+        )
     )
 
 
@@ -279,14 +214,29 @@ class Sandbox:
 
     @classmethod
     def create(cls, *, timeout_s: int = 30 * 60) -> "Sandbox":
-        log.info("creating modal sandbox (timeout=%ds, ports=%s)",
-                 timeout_s, list(TUNNELABLE_PORTS))
+        # LLM keys are injected at runtime as env vars via a Modal Secret so
+        # OpenClaw's `${ANTHROPIC_API_KEY}` substitution in the mounted
+        # config.json resolves correctly. Keeping the keys out of the image
+        # means key rotation doesn't trigger an image rebuild.
+        settings = get_settings()
+        secret_vars: dict[str, str] = {}
+        if settings.anthropic_api_key:
+            secret_vars["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+        secrets = (
+            [modal.Secret.from_dict(secret_vars)] if secret_vars else None
+        )
+
+        log.info(
+            "creating modal sandbox (timeout=%ds, ports=%s, secrets=%s)",
+            timeout_s, list(TUNNELABLE_PORTS), sorted(secret_vars.keys()),
+        )
         t0 = time.perf_counter()
         sb = modal.Sandbox.create(
             image=_get_image(),
             app=_get_app(),
             timeout=timeout_s,
             encrypted_ports=list(TUNNELABLE_PORTS),
+            secrets=secrets,
         )
         log.info("sandbox created: id=%s in %dms",
                  sb.object_id, int((time.perf_counter() - t0) * 1000))
