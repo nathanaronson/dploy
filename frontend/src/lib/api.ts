@@ -83,6 +83,47 @@ export function useDeploy() {
   });
 }
 
+export function useDeleteDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (deploymentId: string) => {
+      const res = await fetch(`${API_BASE_URL}/api/v1/deployments/${deploymentId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to delete deployment");
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: listDeploymentsApiV1DeploymentsGetOptions().queryKey });
+    },
+  });
+}
+
+export function useRenameDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      const res = await fetch(`${API_BASE_URL}/api/v1/deployments/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error("Failed to rename deployment");
+      return res.json() as Promise<DeploymentRead>;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: listDeploymentsApiV1DeploymentsGetOptions().queryKey });
+      qc.invalidateQueries({
+        queryKey: getDeploymentApiV1DeploymentsDeploymentIdGetOptions({
+          path: { deployment_id: variables.id },
+        }).queryKey,
+      });
+    },
+  });
+}
+
 // ---------- UI display helpers ----------
 
 export type DisplayStatus = "Running" | "Building" | "Failed";

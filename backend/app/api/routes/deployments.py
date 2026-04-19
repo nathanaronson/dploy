@@ -16,6 +16,7 @@ from app.schemas.deployment import (
     DeploymentDetail,
     DeploymentList,
     DeploymentRead,
+    DeploymentUpdate,
 )
 from app.services.deploy import run_deployment, teardown_deployment
 
@@ -110,23 +111,39 @@ async def get_agent_run(
     return run
 
 
-@router.delete("/{deployment_id}", response_model=DeploymentRead)
-async def stop_deployment(
+@router.patch("/{deployment_id}", response_model=DeploymentRead)
+async def update_deployment(
     deployment_id: str,
+    payload: DeploymentUpdate,
     session: SessionDep,
     current_user: CurrentUser,
-    background_tasks: BackgroundTasks,
 ) -> Deployment:
     deployment = await session.get(Deployment, deployment_id)
     if deployment is None or deployment.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Deployment not found")
-    deployment.status = DEPLOYMENT_STATUS_STOPPED
+    if payload.name is not None:
+        deployment.name = payload.name
     await session.commit()
     await session.refresh(deployment)
-    log.info(
-        "DELETE /deployments/%s: marked stopped (user=%s, sandbox=%s)",
-        deployment_id, current_user.id, deployment.sandbox_id,
-    )
-    if deployment.sandbox_id:
-        background_tasks.add_task(teardown_deployment, deployment.id)
     return deployment
+
+
+@router.delete("/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_deployment(
+    deployment_id: str,
+    session: SessionDep,
+    current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
+) -> None:
+    deployment = await session.get(Deployment, deployment_id)
+    if deployment is None or deployment.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    sandbox_id = deployment.sandbox_id
+    log.info(
+        "DELETE /deployments/%s: hard-deleting (user=%s, sandbox=%s)",
+        deployment_id, current_user.id, sandbox_id,
+    )
+    if sandbox_id:
+        background_tasks.add_task(teardown_deployment, deployment.id)
+    await session.delete(deployment)
+    await session.commit()
