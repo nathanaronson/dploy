@@ -1,42 +1,46 @@
 """Deployment agents.
 
-Two prompts, two tool sets, run sequentially:
+Two prompts, run sequentially against an OpenClaw gateway inside a sandbox:
 
-    Agent #1 (analyze) → produces an install/start plan.
-    Agent #2 (expose)  → executes the plan and finds the public port.
+    Agent #1 (analyze) → produces an install/start plan as JSON.
+    Agent #2 (expose)  → executes the plan and reports the public port.
 
-The actual agent loop (Anthropic Messages API + Dedalus exec dispatcher)
-plugs in here. The prompts and tool schemas are the stable contract.
+The agents communicate their final answer by writing a JSON file at a known
+workspace path (see `prompts.ANALYZE_REPORT_PATH` / `EXPOSE_REPORT_PATH`)
+and ending the chat reply with a sentinel string. The orchestrator reads
+the file via `sb.exec("cat ...")` after each chat round-trip.
 """
 
 from .prompts import (
+    ANALYZE_REPORT_PATH,
+    ANALYZE_SENTINEL,
     ANALYZE_SYSTEM,
     ANALYZE_USER_TEMPLATE,
     ENVIRONMENT,
+    EXPOSE_REPORT_PATH,
+    EXPOSE_SENTINEL,
     EXPOSE_SYSTEM,
     EXPOSE_USER_TEMPLATE,
+    FAILURE_SENTINEL,
+    REPO_DIR,
+    WORKSPACE_DIR,
     render_analyze_user,
     render_expose_user,
 )
-from .tools import (
-    ANALYZE_TOOLS,
-    EXPOSE_TOOLS,
-    REPORT_FAILURE,
-    REPORT_INSTALL_PLAN,
-    REPORT_PORT,
-)
 
 __all__ = [
+    "ANALYZE_REPORT_PATH",
+    "ANALYZE_SENTINEL",
     "ANALYZE_SYSTEM",
-    "ANALYZE_TOOLS",
     "ANALYZE_USER_TEMPLATE",
     "ENVIRONMENT",
+    "EXPOSE_REPORT_PATH",
+    "EXPOSE_SENTINEL",
     "EXPOSE_SYSTEM",
-    "EXPOSE_TOOLS",
     "EXPOSE_USER_TEMPLATE",
-    "REPORT_FAILURE",
-    "REPORT_INSTALL_PLAN",
-    "REPORT_PORT",
+    "FAILURE_SENTINEL",
+    "REPO_DIR",
+    "WORKSPACE_DIR",
     "render_analyze_user",
     "render_expose_user",
 ]

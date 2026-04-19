@@ -5,13 +5,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 from app.db.session import init_db
+from app.services import sandbox_pool
+from app.services.deploy import DEFAULT_MODEL
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     await init_db()
-    yield
+    # Warm one sandbox on startup so the first deploy doesn't pay the
+    # ~18s OpenClaw gateway cold-boot.
+    await sandbox_pool.prewarm(DEFAULT_MODEL)
+    try:
+        yield
+    finally:
+        await sandbox_pool.shutdown()
 
 
 def create_app() -> FastAPI:

@@ -1,16 +1,16 @@
-"""Tool schemas exposed to the deployment agents.
+"""Tool schemas — DESIGN REFERENCE ONLY (not used at runtime).
 
-These are the *contracts* the LLM sees. The actual implementations live
-elsewhere (they shell out to the Dedalus VM via the executions API). The
-prompts in `prompts.py` reference these names and parameters verbatim, so
-keep names stable.
+We pivoted away from running our own Anthropic tool-loop in Python. The
+deployment agents now talk to OpenClaw inside the sandbox; OpenClaw runs its
+own agent loop with its own built-in tools (file ops, shell, etc.) and the
+agents return structured output by writing a JSON file at a known path
+(see `prompts.py`).
 
-Two principles:
+These schemas are kept here as documentation of *what we want the agent to
+be able to do* — they serve as a checklist when validating that OpenClaw's
+built-ins cover our needs. They are not imported by the runner.
 
-1. Read-only tools are cheap and idempotent. Encourage their use.
-2. `run_command` is powerful but expensive (network round-trip + a real
-   shell on the VM). The prompt biases the agent toward `read_file`,
-   `list_dir`, `list_listening_ports` first.
+If we ever rebuild a native Anthropic tool loop, this file is the contract.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ LIST_DIR: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Absolute path inside the VM. The project root is "
-                    "/root/.openclaw/workspace/repo. Default: project root."
+                    "/home/machine/repo. Default: project root."
                 ),
-                "default": "/root/.openclaw/workspace/repo",
+                "default": "/home/machine/repo",
             },
             "max_depth": {
                 "type": "integer",

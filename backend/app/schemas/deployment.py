@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -12,12 +13,45 @@ class DeploymentCreate(BaseModel):
     name: str | None = None
     github_url: str | None = Field(default=None, description="https://github.com/owner/repo[.git]")
     upload_id: str | None = Field(default=None, description="ID returned from POST /upload")
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Override the LLM the deployment agents use. "
+            "Format: '<provider>/<model-id>'. "
+            "If null, uses the backend default (currently claude-haiku-4-5)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_source(self) -> "DeploymentCreate":
         if not self.github_url and not self.upload_id:
             raise ValueError("Either github_url or upload_id must be provided")
         return self
+
+
+class AgentRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    deployment_id: str
+    kind: str
+    status: str
+    model: str | None
+    terminal_tool: str | None
+    result: dict[str, Any] | None
+    tool_call_count: int
+    input_tokens: int | None
+    output_tokens: int | None
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentRunDetail(AgentRunRead):
+    """Includes the full transcript — heavier payload."""
+
+    system_prompt: str | None
+    transcript: list[dict[str, Any]] | None
 
 
 class DeploymentRead(BaseModel):
@@ -28,13 +62,29 @@ class DeploymentRead(BaseModel):
     github_url: str | None
     upload_id: str | None
     status: str
+    sandbox_id: str | None
+    model: str | None
+    runtime: str | None
+    package_manager: str | None
+    install_commands: list[str] | None
+    build_commands: list[str] | None
+    start_command: str | None
     run_commands: list[str] | None
     env_required: list[str] | None
+    port: int | None
+    bound_address: str | None
+    health_path: str | None
+    http_status: int | None
     exposed_ports: list[int] | None
     public_url: str | None
+    logs: str | None
     error: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class DeploymentDetail(DeploymentRead):
+    agent_runs: list[AgentRunRead] = []
 
 
 class DeploymentList(BaseModel):

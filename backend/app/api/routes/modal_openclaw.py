@@ -9,6 +9,12 @@ settings = get_settings()
 ANTHROPIC_API_KEY = "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"
 OPENAI_API_KEY = "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"
 
+# Underlying LLM for the openclaw agent. Format: "<provider>/<model-id>".
+# Set at runtime (not baked into image) so it can change per sandbox.
+# The chat request payload always sends `model: "openclaw"` — the agent picks
+# this up from its config.
+MODEL = "anthropic/claude-sonnet-4-6"
+
 ENV = (
     "export PATH=/root/.npm-global/bin:$PATH "
     "&& export HOME=/root "
@@ -40,9 +46,24 @@ def run(sb: modal.Sandbox, cmd: str, timeout: int = 120, stream: bool = False) -
     return stdout.strip()
 
 
-# --- Step 1: Create sandbox with Node.js + OpenClaw baked into the image ---
+# --- Step 1: Create sandbox with Node.js + OpenClaw + config baked into the image ---
 print("Creating Modal sandbox...")
 sb_app = modal.App.lookup("openclaw-sandbox", create_if_missing=True)
+
+# Bake config into the image so runtime pays $0 for `config set` calls.
+# These run during image build and are cached across sandbox creations.
+config_cmds = [
+    "openclaw config set gateway.mode local",
+    "openclaw config set gateway.http.endpoints.chatCompletions.enabled true",
+]
+if ANTHROPIC_API_KEY:
+    config_cmds.append(
+        f'openclaw config set env.vars.ANTHROPIC_API_KEY "{ANTHROPIC_API_KEY}"'
+    )
+if OPENAI_API_KEY:
+    config_cmds.append(
+        f'openclaw config set env.vars.OPENAI_API_KEY "{OPENAI_API_KEY}"'
+    )
 
 image = (
     modal.Image.debian_slim()
@@ -53,6 +74,16 @@ image = (
         "mkdir -p /root/.npm-global /root/.npm-cache /root/.openclaw /root/.compile-cache",
         "NPM_CONFIG_PREFIX=/root/.npm-global NPM_CONFIG_CACHE=/root/.npm-cache "
         "npm install -g openclaw@latest",
+        # Bake openclaw config into the image (cached layer).
+        "PATH=/root/.npm-global/bin:$PATH HOME=/root "
+        "OPENCLAW_STATE_DIR=/root/.openclaw "
+        "NODE_COMPILE_CACHE=/root/.compile-cache OPENCLAW_NO_RESPAWN=1 "
+        "bash -c " + json.dumps(" && ".join(config_cmds)),
+        # Warm Node compile cache so first runtime invocation is fast.
+        "PATH=/root/.npm-global/bin:$PATH HOME=/root "
+        "OPENCLAW_STATE_DIR=/root/.openclaw "
+        "NODE_COMPILE_CACHE=/root/.compile-cache OPENCLAW_NO_RESPAWN=1 "
+        "openclaw --version >/dev/null",
     )
     .env({
         "PATH": "/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -72,55 +103,64 @@ with modal.enable_output():
 
 print(f"Sandbox created: {sb.object_id}")
 
-# --- Step 2: Verify OpenClaw ---
-print("Verifying OpenClaw...")
-out = run(sb, "openclaw --version")
-print(f"OpenClaw version: {out}")
+# --- Step 2: Start gateway + clone repo in parallel ---
+print("Starting gateway and cloning repo in parallel...")
+repo_link = "https://github.com/samuel-lao/personal-website"
 
-# --- Step 3: Configure ---
-print("Configuring OpenClaw...")
-run(sb, "openclaw config set gateway.mode local")
-if ANTHROPIC_API_KEY:
-    run(sb, f'openclaw config set env.vars.ANTHROPIC_API_KEY "{ANTHROPIC_API_KEY}"')
-if OPENAI_API_KEY:
-    run(sb, f'openclaw config set env.vars.OPENAI_API_KEY "{OPENAI_API_KEY}"')
-else:
-    print("WARNING: ANTHROPIC_API_KEY not set, skipping LLM key configuration")
-run(sb, "openclaw config set gateway.http.endpoints.chatCompletions.enabled true")
-print("Configuration complete")
+# Kick clone off in the background; gateway startup doesn't depend on it.
+# Use a marker file (clone.done) since later sb.exec calls run in fresh shells
+# and can't `wait` on a PID from this one.
+run(
+    sb,
+    "rm -f /tmp/clone.done /tmp/clone.rc /tmp/clone.log; "
+    f"nohup bash -c 'git clone --depth=1 --single-branch {repo_link} "
+    f"/root/.openclaw/workspace/repo > /tmp/clone.log 2>&1; "
+    f"echo $? > /tmp/clone.rc; touch /tmp/clone.done' "
+    f">/dev/null 2>&1 &",
+    timeout=10,
+)
 
-# --- Step 4: Start the gateway ---
-print("Starting gateway...")
+# Set the model at runtime (must happen before gateway starts so gateway picks
+# it up on boot). Adds ~1-2s but lets MODEL change per sandbox without rebuild.
+run(
+    sb,
+    f'openclaw config set agents.defaults.model.primary "{MODEL}"',
+    timeout=15,
+)
+
+# Start gateway and poll until it's actually up (replaces fixed sleep 10).
 run(
     sb,
     "nohup openclaw gateway run --auth none > /root/.openclaw/gateway.log 2>&1 &\n"
-    "sleep 10",
-    timeout=60,
+    "for i in $(seq 1 80); do "
+    "  curl -sf http://127.0.0.1:18789/ >/dev/null && exit 0; "
+    "  sleep 0.25; "
+    "done; "
+    "echo 'gateway did not come up in time' >&2; exit 1",
+    timeout=30,
 )
 
-# --- Step 5: Verify ---
-print("Verifying...")
-out = run(sb, "ss -tlnp | grep 18789 || true")
-print(f"Port check: {out}")
+# Wait for the clone marker before chatting.
+run(
+    sb,
+    "for i in $(seq 1 480); do "
+    "  if [ -f /tmp/clone.done ]; then "
+    "    rc=$(cat /tmp/clone.rc 2>/dev/null || echo 1); "
+    "    if [ \"$rc\" != \"0\" ]; then cat /tmp/clone.log >&2; exit \"$rc\"; fi; "
+    "    exit 0; "
+    "  fi; "
+    "  sleep 0.25; "
+    "done; "
+    "echo 'clone did not finish in time' >&2; cat /tmp/clone.log >&2; exit 1",
+    timeout=180,
+)
+print("Gateway up and repo cloned.")
 
-out = run(sb, "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18789/")
-print(f"HTTP status: {out}")
-
-out = run(sb, "openclaw gateway call health")
-print(f"Health: {out}")
-
-# out = run(sb, "openclaw doctor --fix")
-# print(f"Doctor: {out}")
-
-print("Github: Get thing")
-repo_link = "https://github.com/samuel-lao/personal-website"
-out = run(sb, f"git clone {repo_link} /root/.openclaw/workspace/repo")
-
-# --- Step 6: Chat ---
+# --- Step 3: Chat ---
 print("\nSending chat message...")
 payload = json.dumps({
-    "model": "openclaw/default",
-    "messages": [{"role": "user", "content": f"List ALL files in the repo folder. Do not forget any."}],
+    "model": "openclaw",
+    "messages": [{"role": "user", "content": "List ALL files in the repo folder. Do not forget any."}],
 })
 response = run(
     sb,
