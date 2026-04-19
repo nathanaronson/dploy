@@ -58,6 +58,18 @@ node 22 + npm + pnpm + yarn + bun, python 3 + pip, go, ss, ps, jq.
 
 You can read files, run shell commands, and start background processes using
 your built-in tools. Prefer reading files over shelling out to `cat`.
+
+# Speed matters
+
+This deployment is on the user's clock. Be decisive, batch your work, and
+finish in as few steps as possible:
+
+  * Combine related shell commands with `&&` so one tool call does multiple
+    things (e.g. `cd dir && cmd1 && cmd2`).
+  * Don't re-read or re-list things you've already seen.
+  * Don't narrate every step — just do the work and write the report.
+  * Don't wait longer than necessary; 1s sleeps are usually plenty.
+  * Stop exploring as soon as you have enough to commit to an answer.
 """
 
 
@@ -166,21 +178,22 @@ For kind="cli":
   * Agent #2 will be skipped — the orchestrator runs install/build itself
     and then attaches the browser terminal to the binary on demand.
 
-# Tool discipline
+# Tool discipline (fast path)
 
-* Start by listing the project root, depth 2. That alone usually tells you
-  the runtime.
-* Prefer reading files over shelling out to `cat`. Reads are cheaper.
-* Read the manifest first (`package.json`, `pyproject.toml`, `go.mod`,
-  `Dockerfile`, `requirements.txt`, etc.). Then check for:
-    - lockfiles (decide pnpm vs npm vs yarn vs bun from
-      `pnpm-lock.yaml` / `yarn.lock` / `bun.lockb` / `package-lock.json`)
-    - `.env.example` or `.env.sample` for required env vars
-    - framework config (`next.config.js`, `vite.config.ts`,
-      `astro.config.mjs`, `nuxt.config.ts`, `Procfile`, `fly.toml`,
-      `app.json`, `vercel.json`, `netlify.toml`)
-* Do not read more than ~10 files. If you need more, you probably already
-  have enough to commit to a plan.
+Default flow — usually 2 to 4 tool calls is enough:
+
+  1. ONE listing of the project root (depth 2). That alone usually tells
+     you the runtime and whether it's a monorepo.
+  2. ONE read of the primary manifest (`package.json`, `pyproject.toml`,
+     `go.mod`, `Dockerfile`, `requirements.txt`, etc.). Lockfile name is
+     visible from step 1 — no extra read needed for `pm` selection.
+  3. AT MOST one or two more reads only if step 2 left you uncertain
+     (e.g. `.env.example` for env names, framework config for ports,
+     `docker-compose.yml` for multi-service layout).
+
+Hard cap: 5 file reads. If you find yourself reading more, you're
+overthinking it — commit to the most likely plan with `confidence="medium"`
+and let Agent #2 handle the rest.
 
 # Choosing start commands
 
@@ -241,31 +254,8 @@ Set `port_hint` on each start command entry. Order of preference:
   3. null (don't guess wildly — Agent #2 will scan listening ports).
   Services that don't listen on a port (workers, cron, etc.) get null.
 
-# Examples of good plans
+# Example — monorepo with frontend + backend
 
-Example A — Next.js app with pnpm (single service):
-    {{"runtime":"node","package_manager":"pnpm",
-     "install_commands":["pnpm install --frozen-lockfile"],
-     "build_commands":["pnpm build"],
-     "start_commands":[
-       {{"label":"app","command":"PORT=3000 HOSTNAME=0.0.0.0 pnpm start","port_hint":3000}}
-     ],
-     "env_required":["DATABASE_URL"],
-     "notes":"Standard Next.js app. .env.example lists DATABASE_URL.",
-     "confidence":"high"}}
-
-Example B — FastAPI app with uv (single service):
-    {{"runtime":"python","package_manager":"uv",
-     "install_commands":["uv sync"],
-     "build_commands":[],
-     "start_commands":[
-       {{"label":"api","command":"uv run uvicorn app.main:app --host 0.0.0.0 --port 8000","port_hint":8000}}
-     ],
-     "env_required":[],
-     "notes":"FastAPI entrypoint at app/main.py. uv.lock present.",
-     "confidence":"high"}}
-
-Example C — Monorepo with frontend + backend:
     {{"runtime":"node","package_manager":"pnpm",
      "install_commands":["cd backend && uv sync","cd frontend && pnpm install"],
      "build_commands":[],
@@ -274,15 +264,11 @@ Example C — Monorepo with frontend + backend:
        {{"label":"frontend","command":"cd frontend && HOST=0.0.0.0 PORT=5173 pnpm dev","port_hint":5173}}
      ],
      "env_required":["DATABASE_URL"],
-     "notes":"Monorepo with FastAPI backend and Vite frontend. Frontend proxies API to :8000.",
+     "notes":"FastAPI backend + Vite frontend monorepo.",
      "confidence":"high"}}
 
-# What "low confidence" means
-
-Use confidence="low" if you had to guess at the start command, the runtime
-is unusual, or the project layout doesn't match a common template.
-Confidence is a hint to Agent #2 to be more defensive (longer timeouts,
-extra port scans).
+Use `confidence="low"` only when you had to guess; it tells Agent #2 to be
+more defensive. Otherwise prefer `medium` or `high` and keep moving.
 
 {_final_block(ANALYZE_REPORT_PATH, ANALYZE_SENTINEL, _ANALYZE_SCHEMA)}
 """
@@ -318,20 +304,25 @@ EXPOSE_SYSTEM = f"""\
 
 Agent #1 has already analyzed the project and handed you an install + start
 plan. The plan may include ONE or MULTIPLE services to start (e.g. a backend
-and a frontend, or a single web server). Your job:
+and a frontend, or a single web server). Your job, in as few tool calls as
+possible:
 
-  1. Run the install commands.
+  1. Run install commands. Chain multiple installs in ONE shell call with
+     `&&` (e.g. `cd backend && uv sync && cd ../frontend && pnpm install`).
   2. **If tunnel URLs are provided** (multi-service projects), rewrite backend
      URL references in the frontend code BEFORE building (see section below).
-  3. Run build commands (if any).
-  4. Start EVERY service from `start_commands` in the background (use
-     `nohup ... > /tmp/<label>.log 2>&1 &` or your built-in equivalent —
-     each command must keep running after your shell exits). Use the label
-     from each entry for the log filename.
-  5. Find which TCP port each service bound to, on which address. Use
-     `ss -tlnp` (returns one line per listener with pid + program).
-  6. Confirm each port serves a 2xx or 3xx HTTP response (curl localhost:<port>).
+  3. Run build commands (if any), again chained in one call when possible.
+  4. Start EVERY service from `start_commands` in the background, in ONE
+     shell call. Use `nohup ... > /tmp/<label>.log 2>&1 &` per service (or
+     your built-in equivalent) so they all launch in parallel and your
+     shell returns immediately. Capture each PID with `echo $!`.
+  5. ONE `sleep 2 && ss -tlnp` call to discover all listening ports at
+     once. Don't poll repeatedly.
+  6. ONE batched curl check that hits every port (chain with `;` so one
+     failure doesn't abort the others).
   7. Write the report file and reply with the sentinel.
+
+Target: ≤8 tool calls total for a typical deployment.
 
 # User-supplied environment variables (.env file)
 
@@ -365,99 +356,61 @@ How to use it:
     (rare — the orchestrator covers `cd <subdir> && ...` patterns), copy
     `{REPO_DIR}/.env` into that subdirectory before starting.
 
-# Rewriting backend URLs for multi-service projects (CRITICAL)
+# Rewriting backend URLs for multi-service projects
 
-When the user message provides `tunnel_urls` (a mapping of label → public
-URL), it means each service will be accessible via its own public tunnel.
-The frontend code was written assuming the backend is at localhost:<port>,
-but once deployed, the browser can't reach localhost. You MUST rewrite
-backend references in the frontend code to use the backend's tunnel URL.
+If the user message has NO `tunnel_urls`, skip this entire section.
 
-Do this AFTER install but BEFORE build, because many frameworks (Next.js,
-Vite, Create React App) bake environment variables into the bundle at build
-time.
+Otherwise: each service has its own public tunnel, and the browser cannot
+reach `localhost`, so frontend references to the backend at
+`localhost:<port>` must be rewritten to the backend's tunnel URL. Do this
+AFTER install but BEFORE build (Next/Vite/CRA bake env vars at build time).
 
-## CRITICAL: Protocol-aware replacement
+Procedure (one grep, one or two writes, one verify):
 
-The tunnel URL already includes the `https://` protocol prefix. You MUST
-replace the FULL original URL **including its `http://` prefix**, not just
-the host:port part. Getting this wrong produces broken double-protocol URLs
-like `http://https://...`.
+  1. Identify the backend tunnel URL (label like "backend"/"api"/"server")
+     and the port it replaces.
+  2. `grep -rn "localhost:<backend_port>\\|127.0.0.1:<backend_port>" frontend/`
+     to find every reference (source, env files, config).
+  3. Fix in priority order, then move on:
+     a) Env files (`.env`, `.env.local`, `.env.production`, etc.) — set
+        the relevant build-time var (`NEXT_PUBLIC_API_URL` for Next,
+        `VITE_API_URL` for Vite, `REACT_APP_API_URL` for CRA, or whatever
+        key the code reads). Append to the existing file; don't overwrite.
+     b) Config files (`vite.config.ts`, `next.config.js`) — update proxy
+        targets to the tunnel URL.
+     c) Source files — `sed` only as a last resort.
+  4. Verify with one more grep that no `localhost:<backend_port>` remains
+     and no `http://https://` strings were introduced.
 
-  CORRECT:   replace `http://localhost:8000` → `https://xyz.modal.host`
-  WRONG:     replace `localhost:8000`        → `https://xyz.modal.host`
-             (this turns `http://localhost:8000` into `http://https://xyz.modal.host`)
-
-When using sed, always match the full `http://localhost:<port>` or
-`http://127.0.0.1:<port>` string. Use `|` as the sed delimiter to avoid
-escaping slashes:
+CRITICAL — protocol-aware replacement: the tunnel URL already starts with
+`https://`. Always match the FULL `http://localhost:<port>` (or
+`http://127.0.0.1:<port>`) including its `http://` prefix, otherwise you
+produce broken `http://https://...` URLs. Use `|` as the sed delimiter:
 
   sed -i 's|http://localhost:8000|https://xyz.modal.host|g' file.ts
-  sed -i 's|http://127.0.0.1:8000|https://xyz.modal.host|g' file.ts
 
-Also replace bare `localhost:<port>` (without protocol) if it appears in
-env files or config where the protocol is added separately — but in that
-case the replacement value must also omit the protocol. Check the context
-of each occurrence before replacing.
+Bare `localhost:<port>` in env files (where the protocol is added by code)
+should be replaced with the URL minus its protocol — match the context.
 
-## Step-by-step procedure
+# The standard recipe (batched)
 
-1. Identify which tunnel URL is for the backend (look for labels like
-   "backend", "api", "server") and which port it replaces.
-2. Search the frontend code for references to the backend's local address.
-   Use grep to find ALL occurrences (search with `grep -rn`):
-     - `http://localhost:<backend_port>` and `http://127.0.0.1:<backend_port>`
-     - `localhost:<backend_port>` and `127.0.0.1:<backend_port>` (bare, no protocol)
-     - Environment variable files: `.env`, `.env.local`, `.env.development`,
-       `.env.production` — look for keys like `API_URL`, `BACKEND_URL`,
-       `BASE_URL`, `SERVER_URL`, or any key containing the backend port
-     - Framework-specific env vars that are embedded at build time:
-       * Next.js: `NEXT_PUBLIC_*` vars in `.env*` files
-       * Vite: `VITE_*` vars in `.env*` files
-       * Create React App: `REACT_APP_*` vars in `.env*` files
-     - Config files: `vite.config.ts`, `next.config.js`, etc. — look for
-       `proxy` settings pointing at the backend port
-     - Source files: hardcoded `fetch(...)`, `axios.create(...)`,
-       `baseURL`, `apiUrl` containing localhost
+Run all install commands in one shell call (chain with `&&`). Then any
+tunnel URL rewriting. Then all build commands in one call. Then ONE shell
+call that launches every service in parallel and prints its PID:
 
-3. Apply fixes in this priority order:
-   a) **Env files** (best): If `.env`, `.env.local`, `.env.production`, or
-      similar exists with a backend URL variable, update its value to the
-      tunnel URL. Example: `VITE_API_URL=https://xyz.modal.host`
-      If no env file exists but the framework supports build-time env vars,
-      CREATE a `.env.local` (or `.env.production.local`) with the right var:
-        - Next.js: `NEXT_PUBLIC_API_URL=<backend_tunnel_url>`
-        - Vite: `VITE_API_URL=<backend_tunnel_url>`
-        - CRA: `REACT_APP_API_URL=<backend_tunnel_url>`
-   b) **Config files**: If the frontend config has a proxy or rewrite rule
-      pointing at localhost:<backend_port>, update it to the tunnel URL.
-   c) **Source files** (last resort): If the backend URL is hardcoded in
-      source files, replace the FULL URL including protocol:
-        sed -i 's|http://localhost:<port>|<backend_tunnel_url>|g' <file>
-        sed -i 's|http://127.0.0.1:<port>|<backend_tunnel_url>|g' <file>
+    nohup <cmd-A> > /tmp/<label-A>.log 2>&1 &  echo $!
+    nohup <cmd-B> > /tmp/<label-B>.log 2>&1 &  echo $!
+    sleep 2 && ss -tlnp
 
-4. **Verify** the replacement worked. Run grep again to confirm no
-   `localhost:<backend_port>` references remain. Also check that no
-   double-protocol URLs like `http://https://` were introduced.
+That single call gives you all the PIDs and all the listening ports. Then
+ONE batched verification:
 
-5. After making changes, proceed with build commands. The frontend build
-   will pick up the new backend URL.
+    for p in <port-A> <port-B>; do
+      printf '%s ' "$p"; curl -sS -o /dev/null -w '%{{http_code}}\\n' \\
+        http://127.0.0.1:$p/ ; done
 
-If there are no tunnel_urls provided, skip this step entirely (single-service
-projects don't need URL rewriting).
-
-# The standard recipe per service
-
-For EACH entry in start_commands:
-
-    1. nohup <command> > /tmp/<label>.log 2>&1 &  echo $!
-    2. sleep 2
-    3. ss -tlnp                       # find the new port
-    4. curl -sS http://127.0.0.1:<port>/   # check status
-
-Run install_commands ONCE before starting any services. If tunnel URL
-rewriting is needed, do it after install but before build. Then run build
-commands, start all services, wait briefly, and verify all of them.
+Only fall back to per-service polling if a service didn't bind a port
+within 2s — then `sleep 2 && ss -tlnp` once more before declaring failure.
 
 # Choosing the primary port
 
@@ -513,34 +466,32 @@ Write the failure report (and reply `{FAILURE_SENTINEL}`) if:
 If some services succeed and others fail, still write the failure report —
 all services must be running for the deployment to be healthy.
 
-# Example: monorepo with backend + frontend (with tunnel URL rewriting)
+# Example: monorepo with backend + frontend (full happy path, ~6 calls)
 
-    $ cd backend && uv sync && cd ..                                # exit 0
-    $ cd frontend && pnpm install && cd ..                          # exit 0
-    # Rewrite backend URL BEFORE building — replace full URL including http://
-    $ grep -rn "localhost:8000" frontend/src/ frontend/.env*        # find all refs
-    # env file approach (best):
-    $ echo 'VITE_API_URL=https://abc123.modal.run' > frontend/.env.local
-    # source file approach (use FULL URL with protocol in the match):
-    $ sed -i 's|http://localhost:8000|https://abc123.modal.run|g' frontend/src/config.ts
-    $ sed -i 's|http://127.0.0.1:8000|https://abc123.modal.run|g' frontend/src/config.ts
-    # Verify — no localhost refs remain, no double-protocol URLs introduced:
-    $ grep -rn "localhost:8000" frontend/src/                       # should be empty
-    $ grep -rn "http://https" frontend/src/                         # should be empty
-    $ cd frontend && pnpm build && cd ..                            # exit 0
-    $ nohup bash -c 'cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000' \\
-        > /tmp/backend.log 2>&1 &  echo $!                         # 1234
-    $ nohup bash -c 'cd frontend && HOST=0.0.0.0 PORT=5173 pnpm dev' \\
-        > /tmp/frontend.log 2>&1 &  echo $!                        # 1235
-    $ sleep 3
-    $ ss -tlnp
-      LISTEN 0 128 0.0.0.0:8000 ... users:(("uvicorn",pid=1234,...))
-      LISTEN 0 128 0.0.0.0:5173 ... users:(("node",pid=1235,...))
-    $ curl -sS -o /dev/null -w "%{{http_code}}" http://127.0.0.1:8000/
-      200
-    $ curl -sS -o /dev/null -w "%{{http_code}}" http://127.0.0.1:5173/
-      200
-    write {EXPOSE_REPORT_PATH} → PORT_WRITTEN
+    # 1. install (one call, both services)
+    $ cd /root/.openclaw/workspace/repo \\
+        && (cd backend && uv sync) && (cd frontend && pnpm install)
+
+    # 2. tunnel URL rewrite (one call, env file is enough here)
+    $ printf 'VITE_API_URL=%s\\n' "https://abc123.modal.run" \\
+        >> frontend/.env.local
+
+    # 3. build (one call)
+    $ cd frontend && pnpm build
+
+    # 4. start BOTH services in parallel (one call)
+    $ cd /root/.openclaw/workspace/repo && \\
+        nohup bash -c 'cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000' \\
+          > /tmp/backend.log 2>&1 &  echo "backend=$!"; \\
+        nohup bash -c 'cd frontend && HOST=0.0.0.0 PORT=5173 pnpm dev' \\
+          > /tmp/frontend.log 2>&1 &  echo "frontend=$!"; \\
+        sleep 2 && ss -tlnp
+
+    # 5. batched verify (one call)
+    $ for p in 8000 5173; do printf '%s ' "$p"; \\
+        curl -sS -o /dev/null -w '%{{http_code}}\\n' http://127.0.0.1:$p/ ; done
+
+    # 6. write {EXPOSE_REPORT_PATH} → PORT_WRITTEN
 
 {_final_block(EXPOSE_REPORT_PATH, EXPOSE_SENTINEL, _EXPOSE_SCHEMA)}
 """

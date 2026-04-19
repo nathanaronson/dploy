@@ -1,17 +1,39 @@
 {
-  "name": "dploy",
-  "version": "0.0.1",
-  "description": "Vercel-style just-deploy-it CLI for Dedalus",
+  "name": "@ryantanen/dploy",
+  "version": "0.0.3",
+  "description": "Vercel-style just-deploy-it CLI. Point dploy at a GitHub repo and get a live URL.",
   "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/nathanaronson/hp-sp-26#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nathanaronson/hp-sp-26.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/nathanaronson/hp-sp-26/issues"
+  },
+  "keywords": [
+    "deploy",
+    "deployment",
+    "cli",
+    "ink",
+    "vercel",
+    "ephemeral",
+    "sandbox",
+    "ai"
+  ],
   "bin": {
     "dploy": "./bin/dploy"
   },
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",
+    "build:bundle": "tsup --config tsup.bundle.config.ts",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "start": "node ./bin/dploy"
@@ -37,5 +59,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
