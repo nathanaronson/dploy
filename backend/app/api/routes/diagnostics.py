@@ -18,11 +18,37 @@ from pydantic import BaseModel
 
 from app.services import sandbox_pool
 from app.services.deploy import DEFAULT_MODEL
-from app.services.sandbox import Sandbox
+from app.services.sandbox import APP_NAME, Sandbox
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
+
+
+class PoolStatus(BaseModel):
+    capacity: int
+    warm_ttl_s: int
+    ready_count: int
+    replenishing_models: list[str]
+    items: list[dict]
+    modal_app_name: str
+    default_model: str
+
+
+@router.get("/sandbox-pool", response_model=PoolStatus)
+async def sandbox_pool_status() -> PoolStatus:
+    """Snapshot of the in-process warm sandbox pool.
+
+    No auth required — pure read of in-memory state, no side effects.
+    Returns: capacity, warm-TTL, current ready sandboxes (with id/model/age),
+    and which models are currently being replenished.
+    """
+    snap = await sandbox_pool.snapshot()
+    return PoolStatus(
+        **snap,
+        modal_app_name=APP_NAME,
+        default_model=DEFAULT_MODEL,
+    )
 
 
 class OpenClawConfigDump(BaseModel):

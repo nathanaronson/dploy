@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -35,6 +36,10 @@ import modal
 from app.core.config import get_settings
 
 log = logging.getLogger(__name__)
+
+# Dedicated logger for gateway-log tail output so the user can independently
+# crank it to DEBUG / silence it via LOG_LEVEL_THIRD_PARTY etc.
+gateway_log = logging.getLogger("openclaw.gateway")
 
 WORKSPACE_DIR = "/root/.openclaw/workspace"
 REPO_DIR = f"{WORKSPACE_DIR}/repo"
@@ -78,6 +83,46 @@ def _build_image() -> modal.Image:
     ]
     deny_json = json.dumps(DENIED_TOOLS)
 
+    # Plugins we explicitly disable. Observed loading on every chat in our
+    # diagnostic dump:
+    #   bonjour            — multicast DNS service advertising (~30s of retries
+    #                        in a Modal sandbox where mDNS goes nowhere)
+    #   bedrock-mantle-discovery — AWS Bedrock auth probe (we use Anthropic
+    #                              direct; this prints "Mantle IAM token
+    #                              generation unavailable" 3x per chat)
+    #   xai                — xAI provider tool factory
+    #   browser            — headless browser control (we deny browser tools)
+    #   device-pair, memory-core, phone-control, talk-voice — interactive
+    #                        plugins for chat clients (we're a backend deploy
+    #                        bot, not a chat UX)
+    # Each disabled plugin shrinks the system prompt OpenClaw injects on
+    # every model turn AND removes init time on first chat.
+    DISABLED_PLUGINS = [
+        "bonjour",
+        "bedrock-mantle-discovery",
+        "xai",
+        "browser",
+        "device-pair",
+        "memory-core",
+        "phone-control",
+        "talk-voice",
+    ]
+    plugin_cmds = [
+        f"openclaw config set plugins.entries.{p}.enabled false 2>/dev/null || true"
+        for p in DISABLED_PLUGINS
+    ]
+
+    # Anthropic prompt caching. The Anthropic cache TTL silently dropped from
+    # 1h to 5m in March 2026, so explicit ttl="1h" matters — without it our
+    # static system prompt gets re-billed on every tool turn.
+    cache_block = json.dumps({"type": "ephemeral", "ttl": "1h"})
+    cache_cmds = [
+        f"openclaw config set agents.defaults.prompts.cacheControl.soul "
+        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
+        f"openclaw config set agents.defaults.prompts.cacheControl.agents "
+        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
+    ]
+
     config_cmds = [
         "openclaw config set gateway.mode local",
         "openclaw config set gateway.http.endpoints.chatCompletions.enabled true",
@@ -90,6 +135,13 @@ def _build_image() -> modal.Image:
         # LLM turn's system prompt by however many tool schemas these
         # represent.
         f"openclaw config set tools.deny {shlex.quote(deny_json)} --strict-json",
+        # Lean mode: drops heavyweight default tools (browser, cron, message)
+        # from the injected system prompt. Documented as for local models but
+        # also helps when we're trimming the prompt aggressively.
+        "openclaw config set agents.defaults.experimental.localModelLean true "
+        "2>/dev/null || true",
+        *plugin_cmds,
+        *cache_cmds,
     ]
     if anthropic_key:
         config_cmds.append(
@@ -327,8 +379,10 @@ class Sandbox:
         """Start the local OpenClaw gateway and poll until it answers HTTP."""
         log.info("starting openclaw gateway on :%d", GATEWAY_PORT)
         max_wait = int(poll_iters * poll_interval_s) + 5
+        # --verbose + --ws-log full give us richer events in gateway.log so the
+        # tailer (GatewayLogTailer) has something useful to stream during chats.
         cmd = (
-            "nohup openclaw gateway run --auth none "
+            "nohup openclaw gateway run --auth none --verbose --ws-log full "
             "> /root/.openclaw/gateway.log 2>&1 &\n"
             f"for i in $(seq 1 {poll_iters}); do "
             f"  curl -sf http://127.0.0.1:{GATEWAY_PORT}/ >/dev/null && exit 0; "
@@ -383,6 +437,54 @@ class Sandbox:
     # OpenClaw chat
     # ------------------------------------------------------------------
 
+    def warmup_chat(self, *, model: str = "openclaw", timeout_s: int = 120) -> None:
+        """Send a tiny throwaway chat to force OpenClaw's first-request init.
+
+        On the very first chat to a fresh gateway, OpenClaw lazily initializes
+        plugins, the agent runtime backend, the session file, etc. — easily
+        adding 30-60s to the deploy that happens to hit it. By doing this
+        during pool warming (background), the next real deploy skips all of
+        that overhead.
+
+        We intentionally use the smallest possible request and don't care
+        about the response. Errors are logged but not raised — a sandbox
+        that fails warmup is still usable, just slower on first real use.
+        """
+        log.info("warmup chat starting (model=%s, timeout=%ds)", model, timeout_s)
+        t0 = time.perf_counter()
+        try:
+            self.chat(
+                system="You are a readiness probe. Reply with exactly the word OK.",
+                user="ready check",
+                model=model,
+                timeout_s=timeout_s,
+                tail=False,  # avoid noise; we already log timing here
+            )
+        except Exception as e:
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            log.warning(
+                "warmup chat failed after %dms (sandbox still usable, "
+                "first real deploy will pay init cost): %s",
+                elapsed, _short(e, 200),
+            )
+            return
+        log.info(
+            "warmup chat done in %dms (gateway plugins + session bootstrapped)",
+            int((time.perf_counter() - t0) * 1000),
+        )
+
+    def tail_gateway_log(self, *, prefix: str = "gw") -> "GatewayLogTailer":
+        """Return a context manager that streams /root/.openclaw/gateway.log
+        to the `openclaw.gateway` Python logger for the duration of the
+        `with` block. Useful for watching what OpenClaw is doing during a
+        chat() call.
+
+        Usage:
+            with sb.tail_gateway_log(prefix="analyze"):
+                sb.chat(...)
+        """
+        return GatewayLogTailer(self, prefix=prefix)
+
     def chat(
         self,
         *,
@@ -390,6 +492,7 @@ class Sandbox:
         user: str,
         timeout_s: int = 600,
         model: str = "openclaw",
+        tail: bool = True,
     ) -> dict[str, Any]:
         """Send a single user turn (with system prompt) to the gateway.
 
@@ -419,7 +522,17 @@ class Sandbox:
             model, len(system), len(user), timeout_s,
         )
         t0 = time.perf_counter()
-        res = self.exec(cmd, timeout_s=timeout_s, stdout_limit=400_000)
+        # Stream the gateway log to the python logger for the duration of the
+        # call, so a developer running `make backend` can see what OpenClaw is
+        # doing in real time. Cheap (one extra `tail -F` process inside the
+        # sandbox) and automatically stops when the chat returns.
+        if tail:
+            tailer_cm = self.tail_gateway_log(prefix="chat")
+        else:
+            from contextlib import nullcontext
+            tailer_cm = nullcontext()
+        with tailer_cm:
+            res = self.exec(cmd, timeout_s=timeout_s, stdout_limit=400_000)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         if not res.ok():
             log.error(
@@ -520,3 +633,73 @@ def _short(value: Any, limit: int) -> str:
     if len(s) > limit:
         return s[:limit] + f"...(+{len(s) - limit})"
     return s
+
+
+class GatewayLogTailer:
+    """Stream /root/.openclaw/gateway.log to the python logger for the
+    duration of a `with` block.
+
+    Spawns `tail -n0 -F /root/.openclaw/gateway.log` inside the sandbox in a
+    background process and reads it from a Python thread. Each line is logged
+    via `openclaw.gateway` (INFO level) with a configurable short prefix so
+    multiple concurrent tailers can be told apart.
+
+    Stop is best-effort: on exit we terminate the underlying Modal process
+    and let the daemon thread die naturally. If terminate fails, the thread
+    will block reading from a closed stream and exit on next iteration.
+    """
+
+    def __init__(self, sb: "Sandbox", *, prefix: str) -> None:
+        self._sb = sb
+        self._prefix = prefix
+        self._process: Any = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def __enter__(self) -> "GatewayLogTailer":
+        try:
+            # -n0 = don't dump backlog, only stream new lines.
+            # -F   = follow even if the file is rotated/recreated.
+            self._process = self._sb._sb.exec(
+                "bash", "-c",
+                "tail -n0 -F /root/.openclaw/gateway.log 2>/dev/null",
+                timeout=24 * 3600,
+            )
+        except Exception:
+            log.exception("tail_gateway_log: failed to start tail")
+            return self
+        self._thread = threading.Thread(
+            target=self._stream_loop,
+            name=f"gateway-log-tail[{self._prefix}]",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        proc = self._process
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        # Don't join — daemon thread will exit on stream close. Joining
+        # would block our caller for up to a few hundred ms which is
+        # not worth it.
+
+    def _stream_loop(self) -> None:
+        proc = self._process
+        if proc is None:
+            return
+        try:
+            for line in proc.stdout:
+                if self._stop.is_set():
+                    return
+                line = line.rstrip("\n").rstrip("\r")
+                if not line:
+                    continue
+                gateway_log.info("[%s] %s", self._prefix, line)
+        except Exception:
+            # Stream closed (sandbox dying, terminate called, etc.). Fine.
+            pass

@@ -127,11 +127,20 @@ async def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 def _provision_warm_sb(model: str) -> Sandbox:
-    """Sync provision: create + set model + start gateway. No repo cloned."""
+    """Sync provision: create + set model + start gateway + warmup chat.
+
+    The warmup chat forces OpenClaw to do its lazy first-request init
+    (plugin loading, runtime backend, session bootstrap) HERE in the
+    background, so the next real deploy doesn't pay that 30-60s tax.
+
+    If the warmup chat fails we still return the sandbox — it's usable,
+    just slower on first real use. We log a warning so it shows up.
+    """
     sb = Sandbox.create(timeout_s=30 * 60)
     try:
         sb.set_model(model)
         sb.start_gateway()
+        sb.warmup_chat()
     except Exception:
         sb.terminate()
         raise
@@ -170,4 +179,30 @@ async def _replenish(model: str) -> None:
         _replenishing.discard(model)
 
 
-__all__ = ["acquire", "prewarm", "shutdown", "POOL_SIZE", "WARM_TTL_S"]
+async def snapshot() -> dict:
+    """Return a JSON-friendly snapshot of the current pool state.
+
+    Used by the diagnostics endpoint and the pool-status script.
+    """
+    async with _lock:
+        items = []
+        now = time.time()
+        for w in _pool:
+            age_s = now - w.created_at
+            items.append({
+                "sandbox_id": w.sb.object_id,
+                "model": w.model,
+                "age_s": round(age_s, 1),
+                "ttl_remaining_s": round(WARM_TTL_S - age_s, 1),
+                "expired": w.expired(),
+            })
+        return {
+            "capacity": POOL_SIZE,
+            "warm_ttl_s": WARM_TTL_S,
+            "ready_count": len(items),
+            "replenishing_models": sorted(_replenishing),
+            "items": items,
+        }
+
+
+__all__ = ["acquire", "prewarm", "shutdown", "snapshot", "POOL_SIZE", "WARM_TTL_S"]
