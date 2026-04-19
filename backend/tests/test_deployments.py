@@ -91,13 +91,16 @@ def test_bearer_token_auth(client: TestClient) -> None:
     assert response.json()["login"] == "cli-user"
 
 
-def test_stop_deployment(authed_client: TestClient) -> None:
+def test_delete_deployment(authed_client: TestClient) -> None:
     create = authed_client.post(
         "/api/v1/deployments",
         json={"github_url": "https://github.com/foo/bar"},
     )
     deployment_id = create.json()["id"]
 
-    stop = authed_client.delete(f"/api/v1/deployments/{deployment_id}")
-    assert stop.status_code == 200, stop.text
-    assert stop.json()["status"] == "stopped"
+    delete = authed_client.delete(f"/api/v1/deployments/{deployment_id}")
+    assert delete.status_code == 204, delete.text
+
+    # Verify it's actually gone
+    get = authed_client.get(f"/api/v1/deployments/{deployment_id}")
+    assert get.status_code == 404

@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Navigate } from "react-router";
-import { ArrowLeft, Copy, ExternalLink, Mail, MessageSquare } from "lucide-react";
+import { ArrowLeft, Copy, ExternalLink, Mail, MessageSquare, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import dployIcon from "../dployIcon.png";
 import { useAuth } from "../lib/AuthContext";
@@ -8,6 +8,7 @@ import {
   deploymentLogLines,
   deploymentSource,
   displayStatus,
+  useDeleteDeployment,
   useProject,
 } from "../lib/api";
 
@@ -16,7 +17,9 @@ export default function DeploymentDetail() {
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
   const { data: deployment, isLoading, isError } = useProject(id, { poll: true });
+  const deleteDeployment = useDeleteDeployment();
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -80,6 +83,20 @@ export default function DeploymentDetail() {
     toast.info("iMessage sharing would open on macOS/iOS");
   };
 
+  const handleDelete = () => {
+    if (!id) return;
+    deleteDeployment.mutate(id, {
+      onSuccess: () => {
+        toast.success("Deployment deleted");
+        navigate("/dashboard");
+      },
+      onError: () => {
+        toast.error("Failed to delete deployment");
+        setShowDeleteModal(false);
+      },
+    });
+  };
+
   return (
     <div className="size-full min-h-screen bg-gray-50">
       {/* Nav */}
@@ -102,21 +119,30 @@ export default function DeploymentDetail() {
       <div className="max-w-5xl mx-auto px-6 py-8 page-content">
         {/* Header */}
         <div className="mb-6">
-          <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-3xl font-semibold">{name}</h1>
-            <span
-              className={`px-3 py-1 rounded-full text-sm font-medium inline-flex items-center gap-1.5 ${
-                status === "Running"
-                  ? "bg-green-100 text-green-700 badge-running"
-                  : status === "Building"
-                  ? "bg-yellow-100 text-yellow-700 badge-building"
-                  : "bg-red-100 text-red-700 badge-failed"
-              }`}
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-semibold">{name}</h1>
+              <span
+                className={`px-3 py-1 rounded-full text-sm font-medium inline-flex items-center gap-1.5 ${
+                  status === "Running"
+                    ? "bg-green-100 text-green-700 badge-running"
+                    : status === "Building"
+                    ? "bg-yellow-100 text-yellow-700 badge-building"
+                    : "bg-red-100 text-red-700 badge-failed"
+                }`}
+              >
+                {status === "Building" && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />}
+                {status === "Running" && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />}
+                {status}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="flex items-center gap-2 text-sm text-gray-400 hover:text-red-500 cursor-pointer btn-hover-subtle rounded-lg px-3 py-2 border border-transparent hover:border-red-200 hover:bg-red-50 transition-colors"
             >
-              {status === "Building" && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />}
-              {status === "Running" && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />}
-              {status}
-            </span>
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
           </div>
           <p className="text-gray-500">
             {source.type === "github" ? (
@@ -255,6 +281,57 @@ export default function DeploymentDetail() {
           </div>
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm animate__animated animate__fadeIn"
+            style={{ animationDuration: "0.2s" }}
+            onClick={() => !deleteDeployment.isPending && setShowDeleteModal(false)}
+          />
+          <div
+            className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 animate__animated animate__fadeInUp"
+            style={{ animationDuration: "0.3s" }}
+          >
+            <div className="text-center mb-6">
+              <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-7 h-7 text-red-500" />
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Delete Deployment</h3>
+              <p className="text-gray-500 text-sm">
+                Are you sure you want to delete <span className="font-medium text-gray-700">{name}</span>? This will shut down the live URL and remove it from your account. This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleteDeployment.isPending}
+                className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50 cursor-pointer btn-hover-subtle disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleteDeployment.isPending}
+                className="flex-1 px-4 py-3 rounded-xl bg-red-500 hover:bg-red-600 text-white cursor-pointer btn-hover flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleteDeployment.isPending ? (
+                  <>
+                    <span className="spinner" style={{ borderColor: "rgba(255,255,255,0.3)", borderTopColor: "white", width: 16, height: 16, borderWidth: 2 }} />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    Delete
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes progressPulse {
