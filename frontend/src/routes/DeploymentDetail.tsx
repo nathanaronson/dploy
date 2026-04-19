@@ -269,44 +269,6 @@ export default function DeploymentDetail() {
           </div>
         </Reveal>
 
-        {/* Building banner */}
-        {status === "Building" && (
-          <Reveal delay={100} className="banner banner-warn">
-            <div className="banner-top">
-              <div className="banner-title-wrap">
-                <span className="status-dot-lg dot-warn" aria-hidden />
-                <div>
-                  <div className="banner-title">Building…</div>
-                  <div className="banner-sub">
-                    ETA {Math.max(0, Math.round(29.5 - elapsed))}s · step{" "}
-                    {Math.min(8, Math.floor(elapsed / 4) + 1)} of 8
-                  </div>
-                </div>
-              </div>
-              <div className="banner-time">{elapsed.toFixed(1)}s</div>
-            </div>
-            <div className="banner-progress">
-              <div className="progress-track tall">
-                <div className="progress-fill" style={{ width: `${progress}%` }}>
-                  <span className="progress-sheen" aria-hidden />
-                </div>
-              </div>
-              <div className="steps-row">
-                {BUILD_STEPS.map((s, i) => {
-                  const done = progress > (i + 1) * 12;
-                  const cur = progress > i * 12 && !done;
-                  return (
-                    <div key={s} className={`step-chip ${done ? "done" : cur ? "cur" : ""}`}>
-                      <span className="step-chip-dot" aria-hidden />
-                      {s}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </Reveal>
-        )}
-
         {/* Running banner */}
         {status === "Running" && liveUrl && (
           <Reveal delay={100} className="banner banner-ok">
