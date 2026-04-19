@@ -7,13 +7,13 @@ import type { User } from "./api";
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
-  logout: () => {},
+  logout: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -24,8 +24,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // First load only — don't keep flashing "loading" on background refetches.
   const loading = isLoading && isFetching;
 
-  const logout = () => {
-    logoutMutation.mutate({});
+  const logout = async () => {
+    return new Promise<void>((resolve) => {
+      logoutMutation.mutate({}, {
+        onSettled: () => resolve(),
+      });
+    });
   };
 
   return (

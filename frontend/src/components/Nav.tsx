@@ -30,8 +30,8 @@ export function Nav() {
   const { user, logout } = useAuth();
   const [dark, setDark] = useDarkMode();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate("/signin");
   };
 
@@ -75,8 +75,8 @@ export function Nav() {
                 )}
                 <span className="nav-username">{displayName}</span>
               </div>
-              <button className="icon-btn" onClick={handleLogout} title="Sign out">
-                <LogOut size={14} />
+              <button className="logout-btn" onClick={handleLogout} title="Sign out">
+                <LogOut size={14} style={{ marginRight: 6 }} /> Logout
               </button>
             </>
           )}
