@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -36,15 +37,36 @@ from app.core.config import get_settings
 
 log = logging.getLogger(__name__)
 
+# Dedicated logger for gateway-log tail output so the user can independently
+# crank it to DEBUG / silence it via LOG_LEVEL_THIRD_PARTY etc.
+gateway_log = logging.getLogger("openclaw.gateway")
+
 WORKSPACE_DIR = "/root/.openclaw/workspace"
 REPO_DIR = f"{WORKSPACE_DIR}/repo"
 APP_NAME = "dploy-deployments"
 GATEWAY_PORT = 18789
 
+# Port we always reserve for the public web terminal that fronts CLI-kind
+# deployments (ttyd). Picked from TUNNELABLE_PORTS so Modal already has a
+# tunnel slot waiting for it. Web (kind=web) deployments are free to bind
+# any other port in TUNNELABLE_PORTS.
+CLI_TERMINAL_PORT = 8081
+
 # Common framework default ports — declared at sandbox creation so we can
 # open a Modal tunnel for whichever one the deployed app picks. If the agent
 # selects something exotic we fall back to "no public URL".
-TUNNELABLE_PORTS = (3000, 3001, 4000, 4321, 5000, 5173, 8000, 8080, 8081, 8501, 8888, 9000)
+TUNNELABLE_PORTS = (
+    3000, 3001, 4000, 4321, 5000, 5173,
+    8000, 8080, CLI_TERMINAL_PORT, 8501, 8888, 9000,
+)
+
+# ttyd is a tiny single-binary web terminal (xterm.js + WebSocket bridge in
+# one process). We bake the upstream x86_64 release into the image so that
+# kind=cli deployments can expose their CLI as a shareable public web
+# terminal in <100ms with no extra dependencies.
+TTYD_VERSION = "1.7.7"
+TTYD_URL = f"https://github.com/tsl0922/ttyd/releases/download/{TTYD_VERSION}/ttyd.x86_64"
+TTYD_BIN = "/usr/local/bin/ttyd"
 
 _IMAGE: modal.Image | None = None
 _APP: modal.App | None = None
@@ -78,6 +100,46 @@ def _build_image() -> modal.Image:
     ]
     deny_json = json.dumps(DENIED_TOOLS)
 
+    # Plugins we explicitly disable. Observed loading on every chat in our
+    # diagnostic dump:
+    #   bonjour            — multicast DNS service advertising (~30s of retries
+    #                        in a Modal sandbox where mDNS goes nowhere)
+    #   bedrock-mantle-discovery — AWS Bedrock auth probe (we use Anthropic
+    #                              direct; this prints "Mantle IAM token
+    #                              generation unavailable" 3x per chat)
+    #   xai                — xAI provider tool factory
+    #   browser            — headless browser control (we deny browser tools)
+    #   device-pair, memory-core, phone-control, talk-voice — interactive
+    #                        plugins for chat clients (we're a backend deploy
+    #                        bot, not a chat UX)
+    # Each disabled plugin shrinks the system prompt OpenClaw injects on
+    # every model turn AND removes init time on first chat.
+    DISABLED_PLUGINS = [
+        "bonjour",
+        "bedrock-mantle-discovery",
+        "xai",
+        "browser",
+        "device-pair",
+        "memory-core",
+        "phone-control",
+        "talk-voice",
+    ]
+    plugin_cmds = [
+        f"openclaw config set plugins.entries.{p}.enabled false 2>/dev/null || true"
+        for p in DISABLED_PLUGINS
+    ]
+
+    # Anthropic prompt caching. The Anthropic cache TTL silently dropped from
+    # 1h to 5m in March 2026, so explicit ttl="1h" matters — without it our
+    # static system prompt gets re-billed on every tool turn.
+    cache_block = json.dumps({"type": "ephemeral", "ttl": "1h"})
+    cache_cmds = [
+        f"openclaw config set agents.defaults.prompts.cacheControl.soul "
+        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
+        f"openclaw config set agents.defaults.prompts.cacheControl.agents "
+        f"{shlex.quote(cache_block)} --strict-json 2>/dev/null || true",
+    ]
+
     config_cmds = [
         "openclaw config set gateway.mode local",
         "openclaw config set gateway.http.endpoints.chatCompletions.enabled true",
@@ -90,6 +152,13 @@ def _build_image() -> modal.Image:
         # LLM turn's system prompt by however many tool schemas these
         # represent.
         f"openclaw config set tools.deny {shlex.quote(deny_json)} --strict-json",
+        # Lean mode: drops heavyweight default tools (browser, cron, message)
+        # from the injected system prompt. Documented as for local models but
+        # also helps when we're trimming the prompt aggressively.
+        "openclaw config set agents.defaults.experimental.localModelLean true "
+        "2>/dev/null || true",
+        *plugin_cmds,
+        *cache_cmds,
     ]
     if anthropic_key:
         config_cmds.append(
@@ -101,7 +170,7 @@ def _build_image() -> modal.Image:
         )
 
     env_inline = (
-        "PATH=/root/.npm-global/bin:$PATH HOME=/root "
+        "PATH=/root/.cargo/bin:/root/.npm-global/bin:$PATH HOME=/root "
         "OPENCLAW_STATE_DIR=/root/.openclaw "
         "NODE_COMPILE_CACHE=/root/.compile-cache OPENCLAW_NO_RESPAWN=1"
     )
@@ -124,10 +193,18 @@ def _build_image() -> modal.Image:
         .run_commands("curl -fsSL https://deb.nodesource.com/setup_22.x | bash -")
         .apt_install("nodejs")
         .run_commands(
-            "mkdir -p /root/.npm-global /root/.npm-cache /root/.openclaw "
+            "mkdir -p /root/.cargo /root/.npm-global /root/.npm-cache /root/.openclaw "
             "/root/.openclaw/workspace /root/.compile-cache",
+            "curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable",
+            f"{env_inline} cargo --version >/dev/null",
             "NPM_CONFIG_PREFIX=/root/.npm-global NPM_CONFIG_CACHE=/root/.npm-cache "
             "npm install -g openclaw@latest pnpm yarn bun",
+            # Static ttyd binary — fronts kind=cli deployments as a public
+            # web terminal. Single binary, no shared-lib deps; lives in its
+            # own layer so changes to the openclaw warmup below don't bust
+            # this 4 MB download.
+            f"curl -fsSL {TTYD_URL} -o {TTYD_BIN} && chmod +x {TTYD_BIN} "
+            f"&& {TTYD_BIN} --version >/dev/null",
             # Bake openclaw config (cached layer).
             f"{env_inline} bash -c " + json.dumps(" && ".join(config_cmds)),
             # Warm Node compile cache.
@@ -147,7 +224,7 @@ def _build_image() -> modal.Image:
             "true'",
         )
         .env({
-            "PATH": "/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:"
+            "PATH": "/root/.cargo/bin:/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:"
                     "/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME": "/root",
             "OPENCLAW_STATE_DIR": "/root/.openclaw",
@@ -327,8 +404,10 @@ class Sandbox:
         """Start the local OpenClaw gateway and poll until it answers HTTP."""
         log.info("starting openclaw gateway on :%d", GATEWAY_PORT)
         max_wait = int(poll_iters * poll_interval_s) + 5
+        # --verbose + --ws-log full give us richer events in gateway.log so the
+        # tailer (GatewayLogTailer) has something useful to stream during chats.
         cmd = (
-            "nohup openclaw gateway run --auth none "
+            "nohup openclaw gateway run --auth none --verbose --ws-log full "
             "> /root/.openclaw/gateway.log 2>&1 &\n"
             f"for i in $(seq 1 {poll_iters}); do "
             f"  curl -sf http://127.0.0.1:{GATEWAY_PORT}/ >/dev/null && exit 0; "
@@ -383,6 +462,54 @@ class Sandbox:
     # OpenClaw chat
     # ------------------------------------------------------------------
 
+    def warmup_chat(self, *, model: str = "openclaw", timeout_s: int = 120) -> None:
+        """Send a tiny throwaway chat to force OpenClaw's first-request init.
+
+        On the very first chat to a fresh gateway, OpenClaw lazily initializes
+        plugins, the agent runtime backend, the session file, etc. — easily
+        adding 30-60s to the deploy that happens to hit it. By doing this
+        during pool warming (background), the next real deploy skips all of
+        that overhead.
+
+        We intentionally use the smallest possible request and don't care
+        about the response. Errors are logged but not raised — a sandbox
+        that fails warmup is still usable, just slower on first real use.
+        """
+        log.info("warmup chat starting (model=%s, timeout=%ds)", model, timeout_s)
+        t0 = time.perf_counter()
+        try:
+            self.chat(
+                system="You are a readiness probe. Reply with exactly the word OK.",
+                user="ready check",
+                model=model,
+                timeout_s=timeout_s,
+                tail=False,  # avoid noise; we already log timing here
+            )
+        except Exception as e:
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            log.warning(
+                "warmup chat failed after %dms (sandbox still usable, "
+                "first real deploy will pay init cost): %s",
+                elapsed, _short(e, 200),
+            )
+            return
+        log.info(
+            "warmup chat done in %dms (gateway plugins + session bootstrapped)",
+            int((time.perf_counter() - t0) * 1000),
+        )
+
+    def tail_gateway_log(self, *, prefix: str = "gw") -> "GatewayLogTailer":
+        """Return a context manager that streams /root/.openclaw/gateway.log
+        to the `openclaw.gateway` Python logger for the duration of the
+        `with` block. Useful for watching what OpenClaw is doing during a
+        chat() call.
+
+        Usage:
+            with sb.tail_gateway_log(prefix="analyze"):
+                sb.chat(...)
+        """
+        return GatewayLogTailer(self, prefix=prefix)
+
     def chat(
         self,
         *,
@@ -390,6 +517,7 @@ class Sandbox:
         user: str,
         timeout_s: int = 600,
         model: str = "openclaw",
+        tail: bool = True,
     ) -> dict[str, Any]:
         """Send a single user turn (with system prompt) to the gateway.
 
@@ -419,7 +547,17 @@ class Sandbox:
             model, len(system), len(user), timeout_s,
         )
         t0 = time.perf_counter()
-        res = self.exec(cmd, timeout_s=timeout_s, stdout_limit=400_000)
+        # Stream the gateway log to the python logger for the duration of the
+        # call, so a developer running `make backend` can see what OpenClaw is
+        # doing in real time. Cheap (one extra `tail -F` process inside the
+        # sandbox) and automatically stops when the chat returns.
+        if tail:
+            tailer_cm = self.tail_gateway_log(prefix="chat")
+        else:
+            from contextlib import nullcontext
+            tailer_cm = nullcontext()
+        with tailer_cm:
+            res = self.exec(cmd, timeout_s=timeout_s, stdout_limit=400_000)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         if not res.ok():
             log.error(
@@ -457,6 +595,161 @@ class Sandbox:
         return parsed
 
     # ------------------------------------------------------------------
+    # Interactive PTY exec (for web terminal)
+    # ------------------------------------------------------------------
+
+    def exec_pty(
+        self,
+        argv: list[str],
+        *,
+        cols: int = 80,
+        rows: int = 24,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_s: int | None = None,
+    ) -> Any:
+        """Spawn `argv` under a PTY inside the sandbox. Returns the raw
+        `modal.container_process.ContainerProcess`.
+
+        No shell is involved — `argv` is passed straight to `execve`, so
+        shell metacharacters in arguments are literal. The caller is
+        responsible for reading `proc.stdout` and writing `proc.stdin`.
+
+        `text=False` so the streams carry bytes (what xterm.js speaks).
+        """
+        from modal_proto import api_pb2
+
+        if not argv:
+            raise ValueError("argv must not be empty")
+
+        pty_info = api_pb2.PTYInfo(
+            enabled=True,
+            winsz_rows=rows,
+            winsz_cols=cols,
+            env_term="xterm-256color",
+            no_terminate_on_idle_stdin=True,
+        )
+        log.info(
+            "exec_pty: argv=%s cwd=%s cols=%d rows=%d",
+            argv, cwd, cols, rows,
+        )
+        return self._sb.exec(
+            *argv,
+            pty_info=pty_info,
+            workdir=cwd,
+            env=env,
+            text=False,
+            timeout=timeout_s,
+        )
+
+    # ------------------------------------------------------------------
+    # Public web terminal (ttyd)
+    # ------------------------------------------------------------------
+
+    def start_ttyd(
+        self,
+        argv: list[str],
+        *,
+        port: int = CLI_TERMINAL_PORT,
+        cwd: str = REPO_DIR,
+        title: str | None = None,
+        max_clients: int = 8,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """Start ttyd inside the sandbox, serving `argv` as a public web
+        terminal on `port`. Each browser connection spawns a fresh
+        subprocess (cwd=`cwd`) and gets a private interactive PTY.
+
+        This is what fronts `kind=cli` deployments — paired with
+        `tunnel(port)` it produces a single shareable HTTPS URL that anyone
+        can open and use the CLI from a clean xterm.js page, no auth, no
+        backend WebSocket hop, no React app to load.
+
+        ttyd is started under `nohup` and detached so it survives this
+        exec call. We poll its HTTP root until it answers (or 8s elapses)
+        before returning, so the tunnel URL is live by the time the
+        orchestrator hands it back to the user.
+        """
+        if not argv:
+            raise SandboxError("start_ttyd: argv must not be empty")
+
+        # Wrap the user's command in a tiny shell launcher so we can cd
+        # into the repo and inject env vars without depending on ttyd's
+        # (nonexistent) cwd flag.
+        env_lines = ""
+        if env:
+            for k, v in env.items():
+                env_lines += f"export {shlex.quote(k)}={shlex.quote(v)}\n"
+        launcher = (
+            "#!/bin/bash\n"
+            f"cd {shlex.quote(cwd)} || exit 1\n"
+            f"{env_lines}"
+            f"exec {' '.join(shlex.quote(a) for a in argv)} \"$@\"\n"
+        )
+        import base64
+        launcher_b64 = base64.b64encode(launcher.encode()).decode()
+        launcher_path = "/tmp/dploy-cli-launcher.sh"
+
+        # Build ttyd's argv as a real list so we can shlex.join() it. This
+        # eliminates the bash quoting / brace-expansion landmines we hit
+        # when --client-option values contain JSON. (Earlier we passed
+        # `theme={"foo":1}` unquoted, which bash brace-expanded into two
+        # bogus arguments and ttyd silently ran one of them as the
+        # terminal command — hence the WS 1006 close on every connection.)
+        ttyd_argv: list[str] = [
+            TTYD_BIN,
+            "--port", str(port),
+            "--interface", "0.0.0.0",
+            "--writable",
+            "--max-clients", str(max_clients),
+            "--terminal-type", "xterm-256color",
+            # Disable the cross-origin check explicitly. The default is OFF
+            # but we set it to OFF anyway in case a future release flips it.
+            "--check-origin=false",
+            "--client-option", "fontSize=13",
+            "--client-option",
+            'theme={"background":"#0b0f19","foreground":"#d1d5db"}',
+        ]
+        if title:
+            ttyd_argv += ["--client-option", f"titleFixed={title}"]
+        ttyd_argv += ["--", launcher_path]
+        ttyd_cmdline = shlex.join(ttyd_argv)
+
+        # `nohup bash -c 'exec ttyd ...'` execs ttyd in place of bash, so
+        # `$!` captures ttyd's PID directly (no fork-and-exit chain to
+        # chase). nohup ignores SIGHUP so ttyd survives this exec call
+        # returning and Modal's stream close.
+        inner = f"exec {ttyd_cmdline} >/tmp/ttyd.log 2>&1"
+        cmd = (
+            f"echo {shlex.quote(launcher_b64)} | base64 -d > {launcher_path} && "
+            f"chmod +x {launcher_path} && "
+            f"rm -f /tmp/ttyd.log /tmp/ttyd.pid; "
+            f"nohup bash -c {shlex.quote(inner)} </dev/null >/dev/null 2>&1 & "
+            f"echo $! > /tmp/ttyd.pid; "
+            # Poll the HTTP root, but ALSO assert the process is still
+            # alive — ttyd may bind the port then immediately die if its
+            # argv is malformed, and we'd otherwise return success.
+            "for i in $(seq 1 32); do "
+            "  if [ ! -d /proc/$(cat /tmp/ttyd.pid) ]; then "
+            "    echo 'ttyd exited during boot' >&2; "
+            "    tail -n 80 /tmp/ttyd.log >&2; exit 1; "
+            "  fi; "
+            f"  curl -sf http://127.0.0.1:{port}/ >/dev/null && exit 0; "
+            "  sleep 0.25; "
+            "done; "
+            "echo 'ttyd did not come up in time' >&2; "
+            "tail -n 80 /tmp/ttyd.log >&2; exit 1"
+        )
+        log.info(
+            "start_ttyd: port=%d cwd=%s argv=%s title=%r cmdline=%s",
+            port, cwd, argv, title, _short(ttyd_cmdline, 300),
+        )
+        t0 = time.perf_counter()
+        self.check_exec(cmd, timeout_s=20)
+        log.info("ttyd up on :%d in %dms",
+                 port, int((time.perf_counter() - t0) * 1000))
+
+    # ------------------------------------------------------------------
     # Public ingress
     # ------------------------------------------------------------------
 
@@ -481,6 +774,27 @@ class Sandbox:
         log.info("tunnel: port %d -> %s", port, url)
         return url
 
+    def tunnel_all(self, ports: list[int]) -> dict[int, str]:
+        """Get tunnel URLs for multiple ports. Returns {port: url} for each
+        port that has an available tunnel."""
+        try:
+            tunnels = self._sb.tunnels()
+        except Exception:
+            log.exception("tunnel_all: modal tunnels() call failed")
+            return {}
+        result: dict[int, str] = {}
+        for port in ports:
+            if port not in TUNNELABLE_PORTS:
+                log.warning("tunnel_all: port %d not in TUNNELABLE_PORTS, skipping", port)
+                continue
+            t = tunnels.get(port)
+            if t is not None:
+                url = getattr(t, "url", None)
+                if url:
+                    result[port] = url
+                    log.info("tunnel_all: port %d -> %s", port, url)
+        return result
+
 
 def _read_truncated(stream, limit: int) -> str:
     chunks: list[str] = []
@@ -499,3 +813,73 @@ def _short(value: Any, limit: int) -> str:
     if len(s) > limit:
         return s[:limit] + f"...(+{len(s) - limit})"
     return s
+
+
+class GatewayLogTailer:
+    """Stream /root/.openclaw/gateway.log to the python logger for the
+    duration of a `with` block.
+
+    Spawns `tail -n0 -F /root/.openclaw/gateway.log` inside the sandbox in a
+    background process and reads it from a Python thread. Each line is logged
+    via `openclaw.gateway` (INFO level) with a configurable short prefix so
+    multiple concurrent tailers can be told apart.
+
+    Stop is best-effort: on exit we terminate the underlying Modal process
+    and let the daemon thread die naturally. If terminate fails, the thread
+    will block reading from a closed stream and exit on next iteration.
+    """
+
+    def __init__(self, sb: "Sandbox", *, prefix: str) -> None:
+        self._sb = sb
+        self._prefix = prefix
+        self._process: Any = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def __enter__(self) -> "GatewayLogTailer":
+        try:
+            # -n0 = don't dump backlog, only stream new lines.
+            # -F   = follow even if the file is rotated/recreated.
+            self._process = self._sb._sb.exec(
+                "bash", "-c",
+                "tail -n0 -F /root/.openclaw/gateway.log 2>/dev/null",
+                timeout=24 * 3600,
+            )
+        except Exception:
+            log.exception("tail_gateway_log: failed to start tail")
+            return self
+        self._thread = threading.Thread(
+            target=self._stream_loop,
+            name=f"gateway-log-tail[{self._prefix}]",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        proc = self._process
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        # Don't join — daemon thread will exit on stream close. Joining
+        # would block our caller for up to a few hundred ms which is
+        # not worth it.
+
+    def _stream_loop(self) -> None:
+        proc = self._process
+        if proc is None:
+            return
+        try:
+            for line in proc.stdout:
+                if self._stop.is_set():
+                    return
+                line = line.rstrip("\n").rstrip("\r")
+                if not line:
+                    continue
+                gateway_log.info("[%s] %s", self._prefix, line)
+        except Exception:
+            # Stream closed (sandbox dying, terminate called, etc.). Fine.
+            pass

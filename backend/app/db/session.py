@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -30,6 +31,35 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "sqlite":
+            await conn.run_sync(_migrate_sqlite_deployments_table)
+
+
+def _migrate_sqlite_deployments_table(sync_conn) -> None:
+    """Backfill additive schema changes for the local SQLite dev DB.
+
+    `create_all()` will create missing tables, but it won't add new columns to
+    an existing `deployments` table. We keep the migration intentionally tiny
+    and additive so current dev DBs keep working without manual resets.
+    """
+    inspector = inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    if "deployments" not in tables:
+        return
+
+    cols = {col["name"] for col in inspector.get_columns("deployments")}
+
+    if "kind" not in cols:
+        sync_conn.execute(
+            text(
+                "ALTER TABLE deployments "
+                "ADD COLUMN kind VARCHAR(16) NOT NULL DEFAULT 'web'"
+            )
+        )
+        sync_conn.execute(text("UPDATE deployments SET kind = 'web' WHERE kind IS NULL"))
+
+    if "entrypoint" not in cols:
+        sync_conn.execute(text("ALTER TABLE deployments ADD COLUMN entrypoint JSON"))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

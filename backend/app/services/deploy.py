@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import time
 from contextlib import contextmanager
 from typing import Any
 
+from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.deployment import (
     AGENT_KIND_ANALYZE,
@@ -48,6 +50,7 @@ from app.models.deployment import (
     AgentRun,
     Deployment,
 )
+from app.services import sandbox_pool
 from app.services.agents import (
     ANALYZE_REPORT_PATH,
     ANALYZE_SYSTEM,
@@ -57,8 +60,12 @@ from app.services.agents import (
     render_expose_user,
 )
 from app.services.agents.heuristics import try_synthesize_plan
-from app.services.sandbox import Sandbox, SandboxError
-from app.services import sandbox_pool
+from app.services.sandbox import (
+    CLI_TERMINAL_PORT,
+    REPO_DIR,
+    Sandbox,
+    SandboxError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +111,13 @@ def _short(value: Any, limit: int = 200) -> str:
     if len(s) > limit:
         return s[:limit] + f"...({len(s) - limit} more)"
     return s
+
+
+def _frontend_terminal_url(deployment_id: str) -> str:
+    """Authenticated in-app terminal route. Useful for the deployment owner
+    when they want to pass extra args; not the shareable public link."""
+    base = get_settings().frontend_url.rstrip("/")
+    return f"{base}/deployment/{deployment_id}/terminal"
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +214,21 @@ def _clone_into_sync(sb: Sandbox, github_url: str) -> None:
     except Exception:
         sb.terminate()
         raise
+
+
+def _run_install_sync(sb: Sandbox, plan: dict[str, Any]) -> None:
+    """Execute install + build commands directly in the sandbox.
+
+    Used for `kind=cli` deployments where we skip Agent #2 entirely.
+    Raises `SandboxError` (via `check_exec`) on the first non-zero exit so
+    the caller can surface a structured failure.
+    """
+    for cmd in plan.get("install_commands") or []:
+        sb.check_exec(cmd, cwd=REPO_DIR, timeout_s=600,
+                      stdout_limit=200_000, stderr_limit=200_000)
+    for cmd in plan.get("build_commands") or []:
+        sb.check_exec(cmd, cwd=REPO_DIR, timeout_s=900,
+                      stdout_limit=200_000, stderr_limit=200_000)
 
 
 def _run_agent_sync(
@@ -343,8 +372,8 @@ async def run_deployment(deployment_id: str) -> None:
         if heuristic_plan is not None:
             plan = heuristic_plan
             dlog.info(
-                "analyze: heuristic synthesized plan, skipping LLM (runtime=%s, start=%r)",
-                plan.get("runtime"), _short(plan.get("start_command"), 100),
+                "analyze: heuristic synthesized plan, skipping LLM (runtime=%s, services=%d)",
+                plan.get("runtime"), len(plan.get("start_commands") or []),
             )
             await _append_log(
                 deployment_id,
@@ -427,39 +456,201 @@ async def run_deployment(deployment_id: str) -> None:
 
         install_cmds = plan.get("install_commands") or []
         build_cmds = plan.get("build_commands") or []
+        kind = plan.get("kind") or "web"
+        start_cmds = plan.get("start_commands") or []
+        # CLI deployments keep a single `start_command` (the binary to spawn
+        # under a PTY). Web deployments use the multi-service `start_commands`
+        # list; we still mirror the first one into `start_command` for any
+        # legacy consumers reading the old field.
+        cli_start_cmd = plan.get("start_command") or ""
+        entrypoint = shlex.split(cli_start_cmd) if cli_start_cmd else None
+
         dlog.info(
-            "plan summary: runtime=%s pm=%s install=%d cmds build=%d cmds start=%r port_hint=%s confidence=%s",
+            "plan summary: kind=%s runtime=%s pm=%s install=%d cmds build=%d cmds services=%d confidence=%s",
+            kind,
             plan.get("runtime"),
             plan.get("package_manager"),
             len(install_cmds),
             len(build_cmds),
-            _short(plan.get("start_command"), 100),
-            plan.get("port_hint"),
+            len(start_cmds),
             plan.get("confidence"),
         )
         await _append_log(
             deployment_id,
-            f"Plan: runtime={plan.get('runtime')} pm={plan.get('package_manager')} "
-            f"port_hint={plan.get('port_hint')} confidence={plan.get('confidence')}",
+            f"Plan: kind={kind} runtime={plan.get('runtime')} "
+            f"pm={plan.get('package_manager')} "
+            f"services={len(start_cmds)} confidence={plan.get('confidence')}",
         )
         for cmd in install_cmds:
             await _append_log(deployment_id, f"  install: {cmd}")
         for cmd in build_cmds:
             await _append_log(deployment_id, f"  build:   {cmd}")
-        await _append_log(deployment_id, f"  start:   {plan.get('start_command')}")
+        if kind == "cli":
+            await _append_log(deployment_id, f"  start:   {cli_start_cmd}")
+        else:
+            for svc in start_cmds:
+                await _append_log(
+                    deployment_id,
+                    f"  start [{svc.get('label', '?')}]: {svc.get('command')} (port_hint={svc.get('port_hint')})",
+                )
+
+        if kind == "cli":
+            persisted_start_cmd: str | None = cli_start_cmd or None
+        else:
+            persisted_start_cmd = start_cmds[0].get("command") if start_cmds else None
+
         await _update_deployment(
             deployment_id,
+            kind=kind,
+            entrypoint=entrypoint,
             runtime=plan.get("runtime"),
             package_manager=plan.get("package_manager"),
             install_commands=install_cmds,
             build_commands=build_cmds,
-            start_command=plan.get("start_command"),
+            start_command=persisted_start_cmd,
+            start_commands=start_cmds,
             run_commands=install_cmds + build_cmds,
             env_required=plan.get("env_required") or [],
         )
 
         # ------------------------------------------------------------------
-        # 3. Agent #2 — expose
+        # 3a. CLI kind — skip Agent #2. Run install/build, then expose the
+        # CLI as a public web terminal via ttyd inside the sandbox + a
+        # Modal tunnel. The deployment's public_url becomes a shareable
+        # HTTPS link to a clean xterm.js page wired straight to the binary.
+        # ------------------------------------------------------------------
+        if kind == "cli":
+            await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
+            await _append_log(
+                deployment_id,
+                "CLI deployment: running install/build commands...",
+            )
+            try:
+                with _step(dlog, "cli install+build"):
+                    await asyncio.to_thread(_run_install_sync, sb, plan)
+            except SandboxError as e:
+                err = f"install/build failed: {_short(e, 300)}"
+                await _update_deployment(
+                    deployment_id,
+                    status=DEPLOYMENT_STATUS_FAILED,
+                    error=err,
+                )
+                await _append_log(deployment_id, f"ERROR: {err}")
+                dlog.warning("cli install/build failed: %s", _short(e, 300))
+                return
+
+            if not entrypoint:
+                err = (
+                    "CLI deployment has no start_command/entrypoint, can't "
+                    "front a web terminal."
+                )
+                await _update_deployment(
+                    deployment_id,
+                    status=DEPLOYMENT_STATUS_FAILED,
+                    error=err,
+                )
+                await _append_log(deployment_id, f"ERROR: {err}")
+                return
+
+            await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_EXPOSING)
+            await _append_log(
+                deployment_id,
+                f"Starting public web terminal (ttyd) on :{CLI_TERMINAL_PORT}...",
+            )
+            try:
+                with _step(dlog, "start ttyd", port=CLI_TERMINAL_PORT):
+                    await asyncio.to_thread(
+                        sb.start_ttyd,
+                        entrypoint,
+                        port=CLI_TERMINAL_PORT,
+                        cwd=REPO_DIR,
+                        title=f"{name} · dploy",
+                    )
+            except SandboxError as e:
+                err = f"ttyd start failed: {_short(e, 300)}"
+                await _update_deployment(
+                    deployment_id,
+                    status=DEPLOYMENT_STATUS_FAILED,
+                    error=err,
+                )
+                await _append_log(deployment_id, f"ERROR: {err}")
+                return
+
+            with _step(dlog, "open tunnel", port=CLI_TERMINAL_PORT):
+                public_url = await asyncio.to_thread(sb.tunnel, CLI_TERMINAL_PORT)
+            if not public_url:
+                # Fall back to the in-app terminal URL so the owner at
+                # least has a way in. Not shareable, but better than
+                # nothing.
+                public_url = _frontend_terminal_url(deployment_id)
+                await _append_log(
+                    deployment_id,
+                    f"WARNING: no Modal tunnel for :{CLI_TERMINAL_PORT}; "
+                    f"falling back to authenticated in-app terminal: {public_url}",
+                )
+
+            await _update_deployment(
+                deployment_id,
+                status=DEPLOYMENT_STATUS_RUNNING,
+                port=CLI_TERMINAL_PORT,
+                bound_address=f"0.0.0.0:{CLI_TERMINAL_PORT}",
+                health_path="/",
+                http_status=200,
+                exposed_ports=[CLI_TERMINAL_PORT],
+                public_url=public_url,
+            )
+            elapsed = int((time.perf_counter() - overall_t0) * 1000)
+            dlog.info(
+                "CLI DEPLOYMENT READY in %dms: entrypoint=%s public_url=%s",
+                elapsed, entrypoint, public_url,
+            )
+            await _append_log(
+                deployment_id,
+                f"CLI READY ({elapsed/1000:.1f}s total) — public terminal: {public_url}",
+            )
+            await _append_log(
+                deployment_id,
+                f"  entrypoint: {shlex.join(entrypoint) if entrypoint else '(no entrypoint)'}",
+            )
+            return
+
+        # ------------------------------------------------------------------
+        # 3b. Pre-fetch tunnel URLs for multi-service web projects
+        # ------------------------------------------------------------------
+        # Modal tunnels are available as soon as the sandbox is created
+        # (ports were declared via encrypted_ports). For monorepos with
+        # frontend + backend, we fetch the tunnel URLs now so Agent #2 can
+        # rewrite localhost references in the frontend before building.
+        tunnel_urls_by_label: dict[str, str] | None = None
+        if len(start_cmds) > 1:
+            service_ports = [
+                s.get("port_hint") for s in start_cmds
+                if s.get("port_hint")
+            ]
+            if service_ports:
+                with _step(dlog, "pre-fetch tunnel URLs", ports=service_ports):
+                    port_to_url = await asyncio.to_thread(
+                        sb.tunnel_all, service_ports
+                    )
+                if port_to_url:
+                    tunnel_urls_by_label = {}
+                    for svc in start_cmds:
+                        label = svc.get("label", "unknown")
+                        hint = svc.get("port_hint")
+                        if hint and hint in port_to_url:
+                            tunnel_urls_by_label[label] = port_to_url[hint]
+                    dlog.info(
+                        "pre-fetched tunnel URLs: %s",
+                        tunnel_urls_by_label,
+                    )
+                    for label, url in tunnel_urls_by_label.items():
+                        await _append_log(
+                            deployment_id,
+                            f"Tunnel pre-provisioned: {label} -> {url}",
+                        )
+
+        # ------------------------------------------------------------------
+        # 4. Agent #2 — expose  (web kind only)
         # ------------------------------------------------------------------
         await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
         await _append_log(
@@ -470,7 +661,11 @@ async def run_deployment(deployment_id: str) -> None:
             deployment_id, AGENT_KIND_EXPOSE, model
         )
         dlog.info("expose: agent_run=%s", expose_run_id)
-        expose_user = render_expose_user(plan=plan, env_keys_set=[])
+        expose_user = render_expose_user(
+            plan=plan,
+            env_keys_set=[],
+            tunnel_urls=tunnel_urls_by_label,
+        )
         try:
             with _step(dlog, "expose chat"):
                 response, port_report, usage = await asyncio.to_thread(
@@ -529,17 +724,40 @@ async def run_deployment(deployment_id: str) -> None:
             return
 
         # ------------------------------------------------------------------
-        # 4. Open public tunnel
+        # 4. Open public tunnels
         # ------------------------------------------------------------------
         await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_EXPOSING)
-        port = int(port_report.get("port") or 0)
-        await _append_log(
-            deployment_id,
-            f"Server up: port={port} bound={port_report.get('bound_address')} "
-            f"status={port_report.get('http_status')} health={port_report.get('health_path')}",
-        )
-        with _step(dlog, "open tunnel", port=port):
-            public_url = await asyncio.to_thread(sb.tunnel, port) if port else None
+        port = int(port_report.get("primary_port") or port_report.get("port") or 0)
+        services = port_report.get("services") or []
+
+        for svc in services:
+            await _append_log(
+                deployment_id,
+                f"Service [{svc.get('label', '?')}]: port={svc.get('port')} "
+                f"bound={svc.get('bound_address')} status={svc.get('http_status')} "
+                f"health={svc.get('health_path')}",
+            )
+        if not services:
+            await _append_log(
+                deployment_id,
+                f"Server up: port={port} bound={port_report.get('bound_address')} "
+                f"status={port_report.get('http_status')} health={port_report.get('health_path')}",
+            )
+
+        exposed_ports = [s.get("port") for s in services if s.get("port")] or ([port] if port else [])
+
+        # Open tunnels for ALL service ports (not just primary).
+        all_tunnel_ports = list(set(exposed_ports))
+        with _step(dlog, "open tunnels", ports=all_tunnel_ports):
+            port_to_url = await asyncio.to_thread(
+                sb.tunnel_all, all_tunnel_ports
+            )
+        public_url = port_to_url.get(port)
+        if port and not public_url:
+            # Fallback: try opening just the primary port directly.
+            with _step(dlog, "open primary tunnel fallback", port=port):
+                public_url = await asyncio.to_thread(sb.tunnel, port)
+
         if port and not public_url:
             dlog.warning(
                 "no public tunnel for port %d (not in TUNNELABLE_PORTS or modal "
@@ -552,15 +770,34 @@ async def run_deployment(deployment_id: str) -> None:
                 "(not in pre-declared port list); app reachable inside sandbox only.",
             )
 
+        # Build label → URL mapping and identify backend URL.
+        final_tunnel_urls: dict[str, str] = {}
+        backend_url: str | None = None
+        for svc in services:
+            svc_port = svc.get("port")
+            svc_label = svc.get("label", "unknown")
+            if svc_port and svc_port in port_to_url:
+                url = port_to_url[svc_port]
+                final_tunnel_urls[svc_label] = url
+                await _append_log(
+                    deployment_id,
+                    f"Tunnel [{svc_label}]: port {svc_port} -> {url}",
+                )
+                if svc_label in ("backend", "api", "server") and svc_port != port:
+                    backend_url = url
+
+        primary_svc = next((s for s in services if s.get("port") == port), {})
         await _update_deployment(
             deployment_id,
             status=DEPLOYMENT_STATUS_RUNNING,
             port=port,
-            bound_address=port_report.get("bound_address"),
-            health_path=port_report.get("health_path"),
-            http_status=port_report.get("http_status"),
-            exposed_ports=[port] if port else [],
+            bound_address=primary_svc.get("bound_address") or port_report.get("bound_address"),
+            health_path=primary_svc.get("health_path") or port_report.get("health_path"),
+            http_status=primary_svc.get("http_status") or port_report.get("http_status"),
+            exposed_ports=exposed_ports,
             public_url=public_url,
+            backend_url=backend_url,
+            tunnel_urls=final_tunnel_urls or None,
         )
         elapsed = int((time.perf_counter() - overall_t0) * 1000)
         dlog.info(

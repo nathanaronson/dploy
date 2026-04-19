@@ -56,6 +56,9 @@ def configure_logging() -> None:
 
     # Also set level on our own top-level logger so child loggers inherit.
     logging.getLogger("app").setLevel(_level(settings.log_level))
+    # `openclaw.gateway` is the live tail of /root/.openclaw/gateway.log.
+    # Treat it as one of "ours" so it shows by default at INFO.
+    logging.getLogger("openclaw").setLevel(_level(settings.log_level))
 
     third_party_level = _level(settings.log_level_third_party)
     for name in _THIRD_PARTY_LOGGERS:

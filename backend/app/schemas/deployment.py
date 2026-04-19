@@ -70,11 +70,14 @@ class DeploymentRead(BaseModel):
     status: str
     sandbox_id: str | None
     model: str | None
+    kind: str
+    entrypoint: list[str] | None
     runtime: str | None
     package_manager: str | None
     install_commands: list[str] | None
     build_commands: list[str] | None
     start_command: str | None
+    start_commands: list[dict] | None
     run_commands: list[str] | None
     env_required: list[str] | None
     port: int | None
@@ -83,6 +86,8 @@ class DeploymentRead(BaseModel):
     http_status: int | None
     exposed_ports: list[int] | None
     public_url: str | None
+    backend_url: str | None
+    tunnel_urls: dict[str, str] | None
     logs: str | None
     error: str | None
     created_at: datetime

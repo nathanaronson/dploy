@@ -52,7 +52,7 @@ def try_synthesize_plan(sb: Sandbox) -> dict[str, Any] | None:
         plan = _try_node(sb, names)
         if plan is not None:
             log.info("heuristic: synthesized node plan: %s",
-                     plan.get("start_command"))
+                     plan.get("start_commands"))
             return plan
 
     # Try Python.
@@ -60,7 +60,7 @@ def try_synthesize_plan(sb: Sandbox) -> dict[str, Any] | None:
         plan = _try_python(sb, names)
         if plan is not None:
             log.info("heuristic: synthesized python plan: %s",
-                     plan.get("start_command"))
+                     plan.get("start_commands"))
             return plan
 
     # Try Go.
@@ -68,7 +68,7 @@ def try_synthesize_plan(sb: Sandbox) -> dict[str, Any] | None:
         plan = _try_go(sb, names)
         if plan is not None:
             log.info("heuristic: synthesized go plan: %s",
-                     plan.get("start_command"))
+                     plan.get("start_commands"))
             return plan
 
     log.info("heuristic: no confident match, deferring to LLM")
@@ -88,6 +88,11 @@ def _try_node(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
         return None
 
     pm = _detect_node_pm(names)
+    deps = (pkg.get("dependencies") or {}) | (pkg.get("devDependencies") or {})
+
+    cli_plan = _try_node_cli(sb, pkg, deps, pm, names)
+    if cli_plan is not None:
+        return cli_plan
 
     # Pick the start command. Prefer `start`, then `dev`, then framework guess.
     start_script = None
@@ -98,7 +103,6 @@ def _try_node(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
 
     if start_script is None:
         # Try a framework dependency check.
-        deps = (pkg.get("dependencies") or {}) | (pkg.get("devDependencies") or {})
         if "next" in deps:
             start_command = "PORT=3000 HOSTNAME=0.0.0.0 npx next start"
             port_hint = 3000
@@ -127,15 +131,79 @@ def _try_node(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
         "package_manager": pm,
         "install_commands": [install_cmd],
         "build_commands": build_commands,
-        "start_command": start_command,
-        "port_hint": port_hint,
+        "start_commands": [
+            {"label": "app", "command": start_command, "port_hint": port_hint},
+        ],
         "env_required": _scan_env_example(sb, names),
         "notes": (
             f"Heuristic: package.json with scripts.{start_script or 'inferred'}; "
             f"package manager={pm}."
         ),
+        "kind": "web",
         "confidence": "high",
     }
+
+
+def _try_node_cli(
+    sb: Sandbox,
+    pkg: dict[str, Any],
+    deps: dict[str, Any],
+    pm: str,
+    names: set[str],
+) -> dict[str, Any] | None:
+    """Classify bin-style Node packages with no obvious web surface as CLIs."""
+    scripts = pkg.get("scripts") or {}
+    if "start" in scripts or "dev" in scripts:
+        return None
+
+    if any(fw in deps for fw in (
+        "next",
+        "express",
+        "fastify",
+        "@nestjs/core",
+        "koa",
+        "hono",
+        "vite",
+        "react-scripts",
+        "astro",
+        "nuxt",
+    )):
+        return None
+
+    bin_field = pkg.get("bin")
+    bin_path: str | None = None
+    if isinstance(bin_field, str):
+        bin_path = bin_field
+    elif isinstance(bin_field, dict):
+        for value in bin_field.values():
+            if isinstance(value, str):
+                bin_path = value
+                break
+    if not bin_path:
+        return None
+
+    install = _node_install_cmd(pm, names)
+    runner = _node_cli_runner(bin_path)
+    return {
+        "runtime": "node",
+        "package_manager": pm,
+        "install_commands": [install],
+        "build_commands": [],
+        "start_command": runner,
+        "port_hint": None,
+        "env_required": _scan_env_example(sb, names),
+        "notes": f"Heuristic: Node CLI via package.json bin={bin_path}.",
+        "kind": "cli",
+        "confidence": "high",
+    }
+
+
+def _node_cli_runner(bin_path: str) -> str:
+    """Return a direct executable command for a package.json bin target."""
+    lower = bin_path.lower()
+    if lower.endswith((".js", ".cjs", ".mjs", ".ts")):
+        return f"node {shlex.quote(bin_path)}"
+    return shlex.quote(bin_path)
 
 
 def _try_python(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
@@ -169,10 +237,12 @@ def _try_python(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
             "package_manager": pm,
             "install_commands": [install],
             "build_commands": [],
-            "start_command": start,
-            "port_hint": 8000,
+            "start_commands": [
+                {"label": "api", "command": start, "port_hint": 8000},
+            ],
             "env_required": _scan_env_example(sb, names),
             "notes": f"Heuristic: FastAPI app at {entry}, package manager={pm}.",
+            "kind": "web",
             "confidence": "high",
         }
 
@@ -190,10 +260,12 @@ def _try_python(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
             "package_manager": pm,
             "install_commands": [install],
             "build_commands": [],
-            "start_command": f"{runner}flask --app app run --host 0.0.0.0 --port 5000",
-            "port_hint": 5000,
+            "start_commands": [
+                {"label": "app", "command": f"{runner}flask --app app run --host 0.0.0.0 --port 5000", "port_hint": 5000},
+            ],
             "env_required": _scan_env_example(sb, names),
             "notes": "Heuristic: Flask app at app.py.",
+            "kind": "web",
             "confidence": "high",
         }
 
@@ -211,16 +283,128 @@ def _try_python(sb: Sandbox, names: set[str]) -> dict[str, Any] | None:
             "package_manager": pm,
             "install_commands": [install],
             "build_commands": [],
-            "start_command": (
-                f"{runner}streamlit run {entry} "
-                "--server.address 0.0.0.0 --server.port 8501"
-            ),
-            "port_hint": 8501,
+            "start_commands": [
+                {
+                    "label": "app",
+                    "command": (
+                        f"{runner}streamlit run {entry} "
+                        "--server.address 0.0.0.0 --server.port 8501"
+                    ),
+                    "port_hint": 8501,
+                },
+            ],
             "env_required": _scan_env_example(sb, names),
             "notes": f"Heuristic: Streamlit app at {entry}.",
+            "kind": "web",
             "confidence": "high",
         }
 
+    # CLI fast-path: Python repo with no web framework, but with a clear
+    # entrypoint — either a top-level `main.py`/`cli.py` OR a
+    # `[project.scripts]` table in pyproject.toml. No port involved.
+    cli_plan = _try_python_cli(sb, names, deps_text, pm)
+    if cli_plan is not None:
+        return cli_plan
+
+    return None
+
+
+def _try_python_cli(
+    sb: Sandbox,
+    names: set[str],
+    deps_text: str,
+    pm: str,
+) -> dict[str, Any] | None:
+    """Classify as a Python CLI when no web framework is present and there's
+    an obvious entrypoint script or console_script.
+    """
+    # Any web framework dep disqualifies the CLI path.
+    if any(fw in deps_text.lower() for fw in (
+        "fastapi", "flask", "django", "starlette", "tornado",
+        "aiohttp", "sanic", "streamlit", "gradio", "uvicorn", "gunicorn",
+    )):
+        return None
+
+    # Option A: pyproject has [project.scripts] — use the first one.
+    if "pyproject.toml" in names:
+        pyproj = sb.read_text(f"{REPO_DIR}/pyproject.toml", max_bytes=20_000) or ""
+        script = _first_project_script(pyproj)
+        if script is not None:
+            install = ("uv sync" if pm == "uv" else
+                       "pip install -e .")
+            start = (f"uv run {script}" if pm == "uv" else script)
+            return {
+                "runtime": "python",
+                "package_manager": pm,
+                "install_commands": [install],
+                "build_commands": [],
+                "start_command": start,
+                "port_hint": None,
+                "env_required": _scan_env_example(sb, names),
+                "notes": f"Heuristic: Python CLI, [project.scripts].{script}.",
+                "kind": "cli",
+                "confidence": "high",
+            }
+
+    # Option B: a top-level script we can invoke directly.
+    for entry in ("main.py", "cli.py", "app.py", "__main__.py"):
+        if entry not in names:
+            continue
+        # Don't misclassify a Flask/FastAPI `app.py` — we've already ruled
+        # those out via deps_text, but double-check for obvious web imports.
+        text = sb.read_text(f"{REPO_DIR}/{entry}", max_bytes=8_000) or ""
+        if any(k in text for k in (
+            "FastAPI(", "Flask(", "from flask", "from fastapi",
+        )):
+            continue
+        install_cmd: list[str]
+        if pm == "uv":
+            install_cmd = ["uv sync"]
+            start = f"uv run python -u {entry}"
+        elif "requirements.txt" in names:
+            install_cmd = ["pip install -r requirements.txt"]
+            start = f"python3 -u {entry}"
+        else:
+            install_cmd = []
+            start = f"python3 -u {entry}"
+        return {
+            "runtime": "python",
+            "package_manager": pm,
+            "install_commands": install_cmd,
+            "build_commands": [],
+            "start_command": start,
+            "port_hint": None,
+            "env_required": _scan_env_example(sb, names),
+            "notes": f"Heuristic: Python CLI, entrypoint {entry}.",
+            "kind": "cli",
+            "confidence": "medium",
+        }
+    return None
+
+
+def _first_project_script(pyproject_text: str) -> str | None:
+    """Return the first key under `[project.scripts]` in pyproject.toml.
+
+    Not a full TOML parse — matches the block lazily, good enough for the
+    common tables we see in practice.
+    """
+    import re
+    # Match [project.scripts] ... until next [section] or EOF.
+    m = re.search(
+        r"\[project\.scripts\]\s*\n(.*?)(?=\n\[|\Z)",
+        pyproject_text,
+        re.DOTALL,
+    )
+    if not m:
+        return None
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        k, _, _ = line.partition("=")
+        k = k.strip().strip('"').strip("'")
+        if k:
+            return k
     return None
 
 
@@ -235,10 +419,12 @@ def _try_go(sb: Sandbox, _names: set[str]) -> dict[str, Any] | None:
         "package_manager": "go",
         "install_commands": ["go mod download"],
         "build_commands": [],
-        "start_command": "go run .",
-        "port_hint": port,
+        "start_commands": [
+            {"label": "app", "command": "go run .", "port_hint": port},
+        ],
         "env_required": [],
         "notes": f"Heuristic: Go module, main.go binds to {port}.",
+        "kind": "web",
         "confidence": "medium",
     }
 

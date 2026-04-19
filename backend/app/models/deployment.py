@@ -78,12 +78,22 @@ class Deployment(Base):
     # Format: "<provider>/<model-id>", e.g. "anthropic/claude-haiku-4-5".
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # "web" (default) — app binds a port, deploy pipeline tunnels it.
+    # "cli"            — app is an interactive binary; no port, attach via
+    #                    web terminal instead.
+    kind: Mapped[str] = mapped_column(String(16), default="web", nullable=False)
+
+    # argv for the web terminal to spawn under a PTY. Populated by Agent #1
+    # for CLI deployments; otherwise falls back to shlex-split(start_command).
+    entrypoint: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
     # Filled in by Agent #1 once it inspects the code.
     runtime: Mapped[str | None] = mapped_column(String(32), nullable=True)
     package_manager: Mapped[str | None] = mapped_column(String(32), nullable=True)
     install_commands: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     build_commands: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     start_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_commands: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     # Legacy column kept for backwards-compat with existing API consumers.
     run_commands: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     env_required: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -95,6 +105,8 @@ class Deployment(Base):
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exposed_ports: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     public_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    backend_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    tunnel_urls: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     logs: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
