@@ -42,14 +42,16 @@ async def create_deployment(
         github_url=payload.github_url,
         upload_id=payload.upload_id,
         model=payload.model,
+        env_vars=payload.env_vars or None,
     )
     session.add(deployment)
     await session.commit()
     await session.refresh(deployment)
 
     log.info(
-        "POST /deployments: created %s (user=%s, name=%r, github_url=%s, upload_id=%s); scheduling orchestrator",
+        "POST /deployments: created %s (user=%s, name=%r, github_url=%s, upload_id=%s, env_keys=%s); scheduling orchestrator",
         deployment.id, current_user.id, payload.name, payload.github_url, payload.upload_id,
+        sorted((payload.env_vars or {}).keys()),
     )
     background_tasks.add_task(run_deployment, deployment.id)
     return deployment

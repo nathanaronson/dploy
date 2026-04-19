@@ -65,6 +65,11 @@ class Deployment(Base):
     github_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     upload_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # User-supplied env vars (KEY -> value). Written to a `.env` file inside
+    # the sandbox before Agent #2 runs. Stored as plaintext JSON for now —
+    # treat as sensitive and don't return values over the API.
+    env_vars: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(32),
         default=DEPLOYMENT_STATUS_PENDING,

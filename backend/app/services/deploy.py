@@ -27,7 +27,9 @@ worker thread via `asyncio.to_thread`. DB writes happen between steps using
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import re
 import shlex
 import time
 from contextlib import contextmanager
@@ -111,6 +113,95 @@ def _short(value: Any, limit: int = 200) -> str:
     if len(s) > limit:
         return s[:limit] + f"...({len(s) - limit} more)"
     return s
+
+
+# ---------------------------------------------------------------------------
+# .env file helpers
+# ---------------------------------------------------------------------------
+#
+# Users can attach a `KEY -> value` mapping when creating a deployment. We
+# materialize those into one or more `.env` files inside the sandbox before
+# Agent #2 runs so install/build/start commands pick them up automatically.
+#
+# Why files instead of `export FOO=...` in each command?
+#   * Many frameworks (Next.js, Vite, CRA, dotenv, pydantic-settings, ...)
+#     expect a `.env` file at runtime / build-time.
+#   * Survives across PIDs, shells, and nohup background processes started
+#     by Agent #2 — exporting per-command would not.
+#
+# Where do we drop them?
+#   * REPO_DIR/.env (always).
+#   * For multi-service projects, also REPO_DIR/<svc>/.env for any service
+#     whose start command starts with `cd <subdir> && ...`. This way a
+#     monorepo backend at `backend/` and frontend at `frontend/` both see
+#     the vars regardless of cwd.
+
+_CD_PREFIX_RE = re.compile(r"^\s*cd\s+([^\s&;|]+)\s*(?:&&|;|$)")
+
+
+def _format_dotenv(env_vars: dict[str, str]) -> str:
+    """Render a `KEY=value` .env file. Values are double-quoted with shell-
+    style escaping so anything (spaces, `#`, `=`) survives a round-trip."""
+    out = []
+    for key in sorted(env_vars):
+        raw = env_vars[key] or ""
+        # Most .env loaders treat literal newlines as record separators; encode
+        # them as `\n` inside a double-quoted value (dotenv-style expansion).
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+        escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+        out.append(f'{key}="{escaped}"')
+    return "\n".join(out) + "\n"
+
+
+def _service_subdirs(start_commands: list[dict[str, Any]] | None) -> list[str]:
+    """Pull `cd <subdir>` prefixes out of each service's start command so we
+    can drop a copy of the .env right next to where the service runs."""
+    subdirs: list[str] = []
+    for svc in start_commands or []:
+        cmd = (svc.get("command") or "").strip()
+        m = _CD_PREFIX_RE.match(cmd)
+        if not m:
+            continue
+        sub = m.group(1).strip("'\"")
+        # Reject absolute paths and `..` traversal — keep the file inside the repo.
+        if sub.startswith("/") or sub.startswith(".."):
+            continue
+        if sub in (".", "./"):
+            continue
+        if sub not in subdirs:
+            subdirs.append(sub)
+    return subdirs
+
+
+def _write_env_file_sync(sb: Sandbox, path: str, content: str) -> None:
+    """Write a file to the sandbox via base64 to dodge shell escaping issues."""
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    parent = path.rsplit("/", 1)[0] or "/"
+    sb.check_exec(
+        f"mkdir -p {shlex.quote(parent)} && "
+        f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(path)} && "
+        f"chmod 600 {shlex.quote(path)}",
+        timeout_s=15,
+    )
+
+
+def _materialize_env_files_sync(
+    sb: Sandbox,
+    env_vars: dict[str, str],
+    start_commands: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Write `.env` to REPO_DIR plus each detected service subdirectory.
+    Returns the list of paths actually written."""
+    if not env_vars:
+        return []
+    content = _format_dotenv(env_vars)
+    written: list[str] = []
+    targets = [REPO_DIR] + [f"{REPO_DIR}/{sub}" for sub in _service_subdirs(start_commands)]
+    for target in targets:
+        path = f"{target.rstrip('/')}/.env"
+        _write_env_file_sync(sb, path, content)
+        written.append(path)
+    return written
 
 
 def _frontend_terminal_url(deployment_id: str) -> str:
@@ -302,10 +393,12 @@ async def run_deployment(deployment_id: str) -> None:
         upload_id = dep.upload_id
         name = dep.name or "(unnamed)"
         model = dep.model or DEFAULT_MODEL
+        env_vars: dict[str, str] = dict(dep.env_vars or {})
 
+    env_keys = sorted(env_vars.keys())
     dlog.info(
-        "loaded: name=%r github_url=%s upload_id=%s model=%s",
-        name, github_url, upload_id, model,
+        "loaded: name=%r github_url=%s upload_id=%s model=%s env_keys=%s",
+        name, github_url, upload_id, model, env_keys,
     )
     await _append_log(
         deployment_id,
@@ -398,7 +491,7 @@ async def run_deployment(deployment_id: str) -> None:
             analyze_user = render_analyze_user(
                 source_description=f"GitHub repo: {github_url}",
                 name=name,
-                user_env_keys=[],
+                user_env_keys=env_keys,
             )
             try:
                 with _step(dlog, "analyze chat"):
@@ -521,6 +614,15 @@ async def run_deployment(deployment_id: str) -> None:
         # ------------------------------------------------------------------
         if kind == "cli":
             await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
+            if env_vars:
+                with _step(dlog, "write .env files (cli)", count=len(env_vars)):
+                    written = await asyncio.to_thread(
+                        _materialize_env_files_sync, sb, env_vars, start_cmds,
+                    )
+                await _append_log(
+                    deployment_id,
+                    f"Wrote {len(env_vars)} env var(s) to {', '.join(written)}",
+                )
             await _append_log(
                 deployment_id,
                 "CLI deployment: running install/build commands...",
@@ -653,6 +755,16 @@ async def run_deployment(deployment_id: str) -> None:
         # 4. Agent #2 — expose  (web kind only)
         # ------------------------------------------------------------------
         await _update_deployment(deployment_id, status=DEPLOYMENT_STATUS_BUILDING)
+        if env_vars:
+            with _step(dlog, "write .env files", count=len(env_vars)):
+                written = await asyncio.to_thread(
+                    _materialize_env_files_sync, sb, env_vars, start_cmds,
+                )
+            await _append_log(
+                deployment_id,
+                f"Wrote {len(env_vars)} env var(s) ({', '.join(env_keys)}) "
+                f"to {', '.join(written)}",
+            )
         await _append_log(
             deployment_id,
             "Building & starting server (Agent #2)...",
@@ -663,7 +775,7 @@ async def run_deployment(deployment_id: str) -> None:
         dlog.info("expose: agent_run=%s", expose_run_id)
         expose_user = render_expose_user(
             plan=plan,
-            env_keys_set=[],
+            env_keys_set=env_keys,
             tunnel_urls=tunnel_urls_by_label,
         )
         try:

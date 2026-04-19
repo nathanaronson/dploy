@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class DeploymentCreate(BaseModel):
@@ -21,11 +21,30 @@ class DeploymentCreate(BaseModel):
             "If null, uses the backend default (currently claude-haiku-4-5)."
         ),
     )
+    env_vars: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "User-supplied environment variables, mapped KEY -> value. "
+            "Written to a `.env` file inside the sandbox before Agent #2 runs. "
+            "Values are sensitive and are never echoed back via the API."
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_source(self) -> "DeploymentCreate":
         if not self.github_url and not self.upload_id:
             raise ValueError("Either github_url or upload_id must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_env_vars(self) -> "DeploymentCreate":
+        if not self.env_vars:
+            return self
+        for k in self.env_vars:
+            if not k or not k.replace("_", "").isalnum():
+                raise ValueError(
+                    f"Invalid env var name {k!r}: must be alphanumeric/underscore"
+                )
         return self
 
 
@@ -72,6 +91,9 @@ class DeploymentRead(BaseModel):
     model: str | None
     kind: str
     entrypoint: list[str] | None
+    # Loaded from the ORM but excluded from the response — values are sensitive.
+    # The public `env_var_keys` computed field below exposes only the names.
+    env_vars: dict[str, str] | None = Field(default=None, exclude=True, repr=False)
     runtime: str | None
     package_manager: str | None
     install_commands: list[str] | None
@@ -92,6 +114,12 @@ class DeploymentRead(BaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def env_var_keys(self) -> list[str]:
+        """Names of user-supplied env vars; values are never returned."""
+        return sorted((self.env_vars or {}).keys())
 
 
 class DeploymentDetail(DeploymentRead):

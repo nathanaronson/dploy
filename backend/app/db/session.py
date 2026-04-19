@@ -61,6 +61,9 @@ def _migrate_sqlite_deployments_table(sync_conn) -> None:
     if "entrypoint" not in cols:
         sync_conn.execute(text("ALTER TABLE deployments ADD COLUMN entrypoint JSON"))
 
+    if "env_vars" not in cols:
+        sync_conn.execute(text("ALTER TABLE deployments ADD COLUMN env_vars JSON"))
+
 
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:

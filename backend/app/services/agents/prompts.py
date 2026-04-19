@@ -327,6 +327,38 @@ and a frontend, or a single web server). Your job:
   6. Confirm each port serves a 2xx or 3xx HTTP response (curl localhost:<port>).
   7. Write the report file and reply with the sentinel.
 
+# User-supplied environment variables (.env file)
+
+Before this turn started, the orchestrator wrote the user's environment
+variables to a `.env` file at:
+
+    {REPO_DIR}/.env
+
+For multi-service projects, the same file is also written to each service's
+working directory (e.g. `{REPO_DIR}/backend/.env`, `{REPO_DIR}/frontend/.env`)
+so that frameworks reading `./.env` from cwd find the values without extra
+work. Permissions are 0600.
+
+The user message will tell you which keys are present (`Env vars already
+populated for this run`). Treat this file as the source of truth for those
+keys — do NOT overwrite it, do NOT echo its values into your shell or logs,
+and do NOT include the values in the structured report.
+
+How to use it:
+
+  * Most tools (dotenv, pydantic-settings, Next.js, Vite, CRA, Django w/
+    django-environ, Rails dotenv, etc.) auto-load `.env` from the cwd at
+    runtime or build-time — usually nothing extra is needed.
+  * If a framework needs the vars exported into the process environment
+    (raw `node`, plain `python`, `go run`, etc.), source it explicitly when
+    starting the service: `set -a; source .env; set +a; <command>`.
+  * If you need to add a NEW key (e.g. `VITE_API_URL` from a tunnel URL),
+    APPEND to the existing `.env` rather than rewriting it. Use
+    `printf 'KEY=%s\\n' "$value" >> .env` so existing user values are kept.
+  * If a service runs from a subdirectory that doesn't already have a `.env`
+    (rare — the orchestrator covers `cd <subdir> && ...` patterns), copy
+    `{REPO_DIR}/.env` into that subdirectory before starting.
+
 # Rewriting backend URLs for multi-service projects (CRITICAL)
 
 When the user message provides `tunnel_urls` (a mapping of label → public
@@ -537,7 +569,8 @@ Agent #1 finished its analysis. Here is the plan:
   notes:             {notes}
   confidence:        {confidence}
 
-Env vars already populated for this run: {env_keys_set}
+Env vars already populated for this run (written to `.env` in the repo root
+and each service subdirectory): {env_keys_set}
 {tunnel_section}
 Start ALL services listed in start_commands. Find and verify the port for
 each one, then write {report_path} and reply with `{sentinel}` (or
