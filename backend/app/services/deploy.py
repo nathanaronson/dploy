@@ -62,11 +62,9 @@ from app.services import sandbox_pool
 
 log = logging.getLogger(__name__)
 
-# Default LLM the OpenClaw agent uses. Haiku 4.5 is ~2x faster prefill than
-# Sonnet on our workload (lots of small tool turns) and good enough for the
-# install-plan / port-discovery tasks. Override per-deployment via the
+# Default LLM the OpenClaw agent uses. Override per-deployment via the
 # Deployment.model column or the `model` field in DeploymentCreate.
-DEFAULT_MODEL = "anthropic/claude-haiku-4-5"
+DEFAULT_MODEL = "openrouter/moonshotai/kimi-k2.5"
 
 
 class _DeployLogger(logging.LoggerAdapter):

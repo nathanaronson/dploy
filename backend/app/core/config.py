@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     dedalus_api_key: str = ""
     anthropic_api_key: str = ""
+    openrouter_api_key: str = ""
 
 
 @lru_cache

@@ -58,6 +58,7 @@ _APP: modal.App | None = None
 def _build_image() -> modal.Image:
     settings = get_settings()
     anthropic_key = settings.anthropic_api_key
+    openrouter_key = settings.openrouter_api_key
     openai_key = ""  # not in settings yet; add if needed
 
     # Tools we explicitly deny. Keep the file/exec/http tools the deployment
@@ -146,6 +147,10 @@ def _build_image() -> modal.Image:
     if anthropic_key:
         config_cmds.append(
             f'openclaw config set env.vars.ANTHROPIC_API_KEY "{anthropic_key}"'
+        )
+    if openrouter_key:
+        config_cmds.append(
+            f'openclaw config set env.vars.OPENROUTER_API_KEY "{openrouter_key}"'
         )
     if openai_key:
         config_cmds.append(
