@@ -1,6 +1,9 @@
+import json
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,10 +19,24 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     debug: bool = False
 
-    cors_origins: list[str] = [
+    cors_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:5173",
         "http://localhost:3000",
     ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v):
+        if v is None or isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                return json.loads(s)
+            return [origin.strip() for origin in s.split(",") if origin.strip()]
+        return v
 
     database_url: str = "sqlite+aiosqlite:///./app.db"
     db_echo: bool = False
@@ -40,6 +57,7 @@ class Settings(BaseSettings):
     # Session cookie.
     session_cookie_name: str = "dploy_session"
     session_cookie_secure: bool = False
+    session_cookie_samesite: str = "lax"  # "lax" | "strict" | "none"
     session_ttl_hours: int = 24 * 7
 
     # Used to HMAC-sign short-lived values like the OAuth `state` param. Set

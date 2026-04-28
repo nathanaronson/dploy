@@ -1,16 +1,6 @@
 import { defineConfig } from "tsup";
 
-// Production bundle config: inlines every npm dep into a single file so the
-// release tarball doesn't need `node_modules` on the user's machine. Used by
-// CI (`pnpm build:bundle`) — local `pnpm build` keeps deps external for fast
-// dev rebuilds.
-//
-// `react-devtools-core` is statically imported by ink/build/devtools.js but
-// only used at runtime when REACT_DEVTOOLS=true. We stub it at build time so
-// the CLI doesn't carry ~6MB of devtools client code we never use.
-// Production backend URL the published bundle points at by default. Users
-// can still override at runtime with `DPLOY_API_URL=...` (see config.ts).
-const PROD_API_URL = "https://hackprinceton--dploy-backend-fastapi-app-dev.modal.run";
+const PROD_API_URL = "https://hackprinceton--dploy-backend-fastapi-app.modal.run";
 
 export default defineConfig({
   entry: ["src/cli.tsx"],

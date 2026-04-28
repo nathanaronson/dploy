@@ -88,7 +88,7 @@ async def github_callback(
         max_age=settings.session_ttl_hours * 3600,
         httponly=True,
         secure=settings.session_cookie_secure,
-        samesite="lax",
+        samesite=settings.session_cookie_samesite,
         path="/",
     )
     return redirect
