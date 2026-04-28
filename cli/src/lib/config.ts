@@ -13,11 +13,12 @@ type Schema = {
 //   3. http://localhost:8000 (local-dev fallback when running `pnpm build` /
 //      `pnpm dev` without the bundle config)
 const BAKED_DEFAULT_API_URL = process.env.DPLOY_DEFAULT_API_URL;
+const LEGACY_LOCAL_API_URL = "http://localhost:8000";
 
 export const DEFAULT_API_URL = (
   process.env.DPLOY_API_URL ??
   BAKED_DEFAULT_API_URL ??
-  "http://localhost:8000"
+  LEGACY_LOCAL_API_URL
 ).replace(/\/+$/, "");
 
 const configDir = process.env.DPLOY_CONFIG_DIR;
@@ -27,3 +28,13 @@ export const config = new Conf<Schema>({
   cwd: configDir,
   defaults: { apiUrl: DEFAULT_API_URL },
 });
+
+// Migration for old installs that persisted localhost from pre-bundled builds.
+// Only run when a baked production default exists and the user did not
+// explicitly override via DPLOY_API_URL.
+if (BAKED_DEFAULT_API_URL && !process.env.DPLOY_API_URL) {
+  const stored = config.get("apiUrl")?.replace(/\/+$/, "");
+  if (!stored || stored === LEGACY_LOCAL_API_URL) {
+    config.set("apiUrl", DEFAULT_API_URL);
+  }
+}
