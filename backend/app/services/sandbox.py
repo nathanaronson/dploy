@@ -341,16 +341,32 @@ class Sandbox:
         means any provider/model the gateway has auth for can be requested.
         """
         log.info("set openclaw model: %s (and clearing allowlist)", model)
-        self.check_exec(
+        set_cmd = (
             "openclaw config set agents.defaults.model.primary "
-            f"{shlex.quote(model)} && "
-            # Reset allowlist to a single-entry list containing only the
-            # primary; we then immediately unset to remove the gating.
-            # `config unset` removes the key entirely so OpenClaw treats it
-            # as "no allowlist" -> all configured providers allowed.
-            "openclaw config unset agents.defaults.models 2>/dev/null || true",
-            timeout_s=15,
+            f"{shlex.quote(model)}"
         )
+        unset_cmd = "openclaw config unset agents.defaults.models 2>/dev/null || true"
+
+        # OpenClaw can emit startup/config warnings before returning from
+        # `config set`, which occasionally takes longer than our old 15s budget.
+        # Retry with a set-only path so stale plugin warnings do not kill pool
+        # replenish for an otherwise healthy sandbox.
+        try:
+            self.check_exec(f"{set_cmd} && {unset_cmd}", timeout_s=30)
+            return
+        except SandboxError as first_error:
+            log.warning(
+                "openclaw config set+unset failed once; retrying set-only path: %s",
+                _short(str(first_error), 300),
+            )
+
+        self.check_exec(set_cmd, timeout_s=45)
+        unset_res = self.exec(unset_cmd, timeout_s=20)
+        if not unset_res.ok():
+            log.warning(
+                "openclaw config unset allowlist failed (non-fatal): %s",
+                _short(unset_res.stderr or unset_res.stdout, 240),
+            )
 
     def start_gateway(self, *, poll_iters: int = 80, poll_interval_s: float = 0.25) -> None:
         """Start the local OpenClaw gateway and poll until it answers HTTP."""
