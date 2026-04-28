@@ -11,8 +11,6 @@ import { useProject, useDeleteDeployment, useRenameDeployment, displayStatus, de
 import { Reveal } from "../components/Reveal";
 import { Nav } from "../components/Nav";
 
-const BUILD_STEPS = ["Clone", "Detect", "Install", "Build", "Package", "Upload", "Route", "Live"];
-
 const PHOTON_URL =
   (import.meta.env.VITE_PHOTON_URL as string | undefined) ?? "http://localhost:4000";
 
@@ -58,14 +56,6 @@ export default function DeploymentDetail() {
   const elapsed = deployment
     ? (Date.now() - new Date(deployment.created_at).getTime()) / 1000
     : 0;
-  const progress = useMemo(() => {
-    if (!deployment) return 0;
-    if (deployment.status === "running") return 100;
-    if (["building", "analyzing", "pending"].includes(deployment.status)) {
-      return Math.min(95, (elapsed / 30) * 100);
-    }
-    return 0;
-  }, [deployment, elapsed]);
 
   // Build log lines — use real logs if available, otherwise mock
   const realLogs = deployment ? deploymentLogLines(deployment) : [];

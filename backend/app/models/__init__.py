@@ -7,6 +7,15 @@ from app.models.deployment import (
 )
 from app.models.session import Session
 from app.models.user import User
+from app.models.warm_sandbox import (
+    WARM_ALIVE_STATUSES,
+    WARM_STATUSES,
+    WARM_STATUS_CLAIMED,
+    WARM_STATUS_FAILED,
+    WARM_STATUS_READY,
+    WARM_STATUS_WARMING,
+    WarmSandbox,
+)
 
 __all__ = [
     "AGENT_KINDS",
@@ -16,4 +25,11 @@ __all__ = [
     "Deployment",
     "Session",
     "User",
+    "WARM_ALIVE_STATUSES",
+    "WARM_STATUSES",
+    "WARM_STATUS_CLAIMED",
+    "WARM_STATUS_FAILED",
+    "WARM_STATUS_READY",
+    "WARM_STATUS_WARMING",
+    "WarmSandbox",
 ]

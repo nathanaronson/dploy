@@ -57,3 +57,8 @@ backend/app.db-journal
 backend/uploads/
 
 .claude/
+
+# Cloudflare Wrangler local state (account id, project cache, dev secrets)
+.wrangler/
+.dev.vars
+.dev.vars.*

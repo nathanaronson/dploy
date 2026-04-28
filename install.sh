@@ -146,10 +146,12 @@ esac
 
 if [ -z "${DPLOY_API_URL:-}" ]; then
   cat <<EOF
-${DIM}By default, dploy talks to http://localhost:8000.
-Point it at a hosted backend with:
+${DIM}By default, dploy talks to the hosted backend at
+https://hackprinceton--dploy-backend-fastapi-app-dev.modal.run.
 
-    export DPLOY_API_URL=https://your-dploy-backend.example.com
+To point it at a self-hosted backend (or your local dev server), set:
+
+    export DPLOY_API_URL=http://localhost:8000
 ${RESET}
 EOF
 fi

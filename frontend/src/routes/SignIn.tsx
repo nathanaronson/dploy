@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Navigate, useNavigate } from "react-router";
+import { Navigate } from "react-router";
 
 import dployIcon from "../dployIcon.png";
 import { loginWithGithub } from "../lib/api";

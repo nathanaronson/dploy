@@ -90,9 +90,13 @@ def main() -> int:
         print("  Warm sandboxes:")
         print(f"    {'sandbox_id':<28}  {'model':<32}  {'age':>7}  {'ttl':>7}  state")
         for item in pool["items"]:
-            state = "EXPIRED" if item["expired"] else "ready"
+            if item["expired"]:
+                state = "EXPIRED"
+            else:
+                state = item.get("status", "ready")
+            sid = item.get("sandbox_id") or "(warming)"
             print(
-                f"    {item['sandbox_id']:<28}  "
+                f"    {sid:<28}  "
                 f"{item['model']:<32}  "
                 f"{item['age_s']:>6.1f}s  "
                 f"{item['ttl_remaining_s']:>6.1f}s  "
@@ -107,7 +111,11 @@ def main() -> int:
     print()
     print(f"==> Cross-checking with Modal (app={APP_NAME})")
     modal_sandboxes = list_modal_sandboxes()
-    pool_ids = {item["sandbox_id"] for item in pool["items"]}
+    pool_ids = {
+        item["sandbox_id"]
+        for item in pool["items"]
+        if item.get("sandbox_id")
+    }
     modal_ids = {sb["sandbox_id"] for sb in modal_sandboxes}
 
     print(f"  modal-side total:    {len(modal_ids)}")
